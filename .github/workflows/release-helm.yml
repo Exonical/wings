@@ -1,0 +1,44 @@
+name: Release Helm Chart
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  CHART_PATH: chart/pelican-wings
+
+jobs:
+  package-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: azure/setup-helm@v5
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR OCI registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+
+      - name: Update chart version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version:.*/version: ${VERSION}/" ${{ env.CHART_PATH }}/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" ${{ env.CHART_PATH }}/Chart.yaml
+
+      - name: Package chart
+        run: helm package ${{ env.CHART_PATH }} --destination .cr-release-packages
+
+      - name: Push chart to GHCR
+        run: |
+          for pkg in .cr-release-packages/*.tgz; do
+            helm push "$pkg" oci://${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/charts
+          done
