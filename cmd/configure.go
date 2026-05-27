@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/huh"
+	"github.com/exonical/wings/config"
 	"github.com/goccy/go-json"
-	"github.com/pelican-dev/wings/config"
 	"github.com/spf13/cobra"
 )
 

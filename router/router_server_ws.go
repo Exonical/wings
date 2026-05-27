@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"emperror.dev/errors"
+	"github.com/exonical/wings/router/middleware"
+	"github.com/exonical/wings/router/websocket"
+	"github.com/exonical/wings/server"
 	"github.com/gin-gonic/gin"
 	ws "github.com/gorilla/websocket"
-	"github.com/pelican-dev/wings/router/middleware"
-	"github.com/pelican-dev/wings/router/websocket"
-	"github.com/pelican-dev/wings/server"
 	"golang.org/x/time/rate"
 )
 

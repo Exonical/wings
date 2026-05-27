@@ -27,16 +27,16 @@ import (
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
-	"github.com/pelican-dev/wings/config"
-	"github.com/pelican-dev/wings/environment"
-	"github.com/pelican-dev/wings/internal/cron"
-	"github.com/pelican-dev/wings/internal/database"
-	"github.com/pelican-dev/wings/loggers/cli"
-	"github.com/pelican-dev/wings/remote"
-	"github.com/pelican-dev/wings/router"
-	"github.com/pelican-dev/wings/server"
-	"github.com/pelican-dev/wings/sftp"
-	"github.com/pelican-dev/wings/system"
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/environment"
+	"github.com/exonical/wings/internal/cron"
+	"github.com/exonical/wings/internal/database"
+	"github.com/exonical/wings/loggers/cli"
+	"github.com/exonical/wings/remote"
+	"github.com/exonical/wings/router"
+	"github.com/exonical/wings/server"
+	"github.com/exonical/wings/sftp"
+	"github.com/exonical/wings/system"
 )
 
 var (
@@ -114,9 +114,11 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
 	log.Debug("running in debug mode")
 	log.WithField("config_file", configPath).Info("loading configuration from file")
 
-	if isDockerSnap() {
-		log.Error("Docker Snap installation detected. Exiting...")
-		os.Exit(1)
+	if !config.Get().Kubernetes.Enabled {
+		if isDockerSnap() {
+			log.Error("Docker Snap installation detected. Exiting...")
+			os.Exit(1)
+		}
 	}
 
 	if ok, _ := cmd.Flags().GetBool("ignore-certificate-errors"); ok {
@@ -173,9 +175,13 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
 		return
 	}
 
-	if err := environment.ConfigureDocker(cmd.Context()); err != nil {
-		log.WithField("error", err).Fatal("failed to configure docker environment")
-		return
+	if !config.Get().Kubernetes.Enabled {
+		if err := environment.ConfigureDocker(cmd.Context()); err != nil {
+			log.WithField("error", err).Fatal("failed to configure docker environment")
+			return
+		}
+	} else {
+		log.Info("kubernetes mode enabled, skipping Docker configuration")
 	}
 
 	if err := config.WriteToDisk(config.Get()); err != nil {
@@ -469,8 +475,8 @@ __ [blue][bold]Pelican[reset] _____/___/_______ _______ ______
 Copyright © 2018 - %d Dane Everitt & Contributors
 
 Website:  https://pelican.dev
- Source:  https://github.com/pelican-dev/wings
-License:  https://github.com/pelican-dev/wings/blob/main/LICENSE
+ Source:  https://github.com/exonical/wings
+License:  https://github.com/exonical/wings/blob/main/LICENSE
 
 This software is made available under the terms of the MIT license.
 The above copyright notice and this permission notice shall be included

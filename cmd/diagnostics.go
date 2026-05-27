@@ -14,8 +14,8 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/spf13/cobra"
 
-	"github.com/pelican-dev/wings/internal/diagnostics"
-	"github.com/pelican-dev/wings/loggers/cli"
+	"github.com/exonical/wings/internal/diagnostics"
+	"github.com/exonical/wings/loggers/cli"
 )
 
 const (

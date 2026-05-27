@@ -19,9 +19,9 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 
-	"github.com/pelican-dev/wings/config"
-	"github.com/pelican-dev/wings/environment"
-	"github.com/pelican-dev/wings/system"
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/environment"
+	"github.com/exonical/wings/system"
 )
 
 var ErrNotAttached = errors.Sentinel("not attached to instance")

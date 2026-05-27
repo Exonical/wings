@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/pelican-dev/wings/environment"
+	"github.com/exonical/wings/environment"
 )
 
 type EggConfiguration struct {

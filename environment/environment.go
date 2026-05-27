@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/pelican-dev/wings/events"
+	"github.com/exonical/wings/events"
 )
 
 const (
@@ -13,6 +13,10 @@ const (
 	DockerImagePullStarted   = "docker image pull started"
 	DockerImagePullStatus    = "docker image pull status"
 	DockerImagePullCompleted = "docker image pull completed"
+
+	KubernetesPodCreating = "kubernetes pod creating"
+	KubernetesPodRunning  = "kubernetes pod running"
+	KubernetesPodStopped  = "kubernetes pod stopped"
 )
 
 const (

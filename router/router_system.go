@@ -11,18 +11,19 @@ import (
 	"github.com/apex/log"
 	"github.com/gin-gonic/gin"
 
-	"github.com/pelican-dev/wings/config"
-	"github.com/pelican-dev/wings/internal/diagnostics"
-	"github.com/pelican-dev/wings/router/middleware"
-	"github.com/pelican-dev/wings/router/tokens"
-	"github.com/pelican-dev/wings/server"
-	"github.com/pelican-dev/wings/server/installer"
-	"github.com/pelican-dev/wings/system"
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/environment/kubernetes"
+	"github.com/exonical/wings/internal/diagnostics"
+	"github.com/exonical/wings/router/middleware"
+	"github.com/exonical/wings/router/tokens"
+	"github.com/exonical/wings/server"
+	"github.com/exonical/wings/server/installer"
+	"github.com/exonical/wings/system"
 )
 
 // Returns information about the system that wings is running on.
 func getSystemInformation(c *gin.Context) {
-	i, err := system.GetSystemInformation()
+	i, err := system.GetSystemInformationWithOptions(config.Get().Kubernetes.Enabled)
 	if err != nil {
 		middleware.CaptureAndAbort(c, err)
 		return
@@ -89,20 +90,53 @@ func getDiagnostics(c *gin.Context) {
 
 // Returns list of host machine IP addresses
 func getSystemIps(c *gin.Context) {
-	interfaces, err := system.GetSystemIps()
-	if err != nil {
-		middleware.CaptureAndAbort(c, err)
-		return
-	}
+	cfg := config.Get()
+	var interfaces []string
 
-	// Append config defined ips as well
-	for i := range config.Get().Docker.SystemIps {
-		targetIp := config.Get().Docker.SystemIps[i]
-		if slices.Contains(interfaces, targetIp) {
-			continue
+	if cfg.Kubernetes.Enabled {
+		ctx := c.Request.Context()
+
+		// In LoadBalancer mode, collect IPs from existing LB Services.
+		if cfg.Kubernetes.NetworkMode == config.KubeNetworkLoadBalancer {
+			lbIPs, err := kubernetes.GetLoadBalancerIPs(ctx)
+			if err != nil {
+				log.WithField("error", err).Warn("failed to query LoadBalancer IPs")
+			} else {
+				interfaces = append(interfaces, lbIPs...)
+			}
 		}
 
-		interfaces = append(interfaces, targetIp)
+		// Always try to get node IPs as a base (needed for NodePort, useful
+		// as fallback for LoadBalancer before any servers exist).
+		nodeIPs, err := kubernetes.GetNodeIPs(ctx)
+		if err != nil {
+			log.WithField("error", err).Warn("failed to query node IPs")
+		} else {
+			for _, ip := range nodeIPs {
+				if !slices.Contains(interfaces, ip) {
+					interfaces = append(interfaces, ip)
+				}
+			}
+		}
+
+		// Append user-configured static IPs.
+		for _, ip := range cfg.Kubernetes.SystemIPs {
+			if !slices.Contains(interfaces, ip) {
+				interfaces = append(interfaces, ip)
+			}
+		}
+	} else {
+		ips, err := system.GetSystemIps()
+		if err != nil {
+			middleware.CaptureAndAbort(c, err)
+			return
+		}
+		interfaces = append(interfaces, ips...)
+		for _, ip := range cfg.Docker.SystemIps {
+			if !slices.Contains(interfaces, ip) {
+				interfaces = append(interfaces, ip)
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, &system.IpAddresses{IpAddresses: interfaces})

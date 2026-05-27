@@ -18,12 +18,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/pelican-dev/wings/config"
-	"github.com/pelican-dev/wings/router/middleware"
-	"github.com/pelican-dev/wings/router/tokens"
-	"github.com/pelican-dev/wings/server"
-	"github.com/pelican-dev/wings/server/installer"
-	"github.com/pelican-dev/wings/server/transfer"
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/router/middleware"
+	"github.com/exonical/wings/router/tokens"
+	"github.com/exonical/wings/server"
+	"github.com/exonical/wings/server/installer"
+	"github.com/exonical/wings/server/transfer"
 )
 
 // postTransfers .
@@ -142,14 +142,13 @@ func postTransfers(c *gin.Context) {
 		return
 	}
 
-
 	// Used to read the file and checksum from the request body.
 	mr := multipart.NewReader(c.Request.Body, params["boundary"])
 
 	var (
-		hasArchive              bool
-		archiveChecksum         string
-		archiveChecksumReceived string
+		hasArchive                bool
+		archiveChecksum           string
+		archiveChecksumReceived   string
 		backupChecksumsCalculated = make(map[string]string)
 		backupChecksumsReceived   = make(map[string]string)
 	)
@@ -208,7 +207,7 @@ out:
 
 			case name == "install_logs":
 				trnsfr.Log().Debug("received install logs")
-				
+
 				// Create install log directory if it doesn't exist
 				cfg := config.Get()
 				installLogDir := filepath.Join(cfg.System.LogDirectory, "install")
@@ -217,10 +216,10 @@ out:
 					trnsfr.Log().WithError(err).Warn("failed to create install log directory, skipping")
 					break
 				}
-				
+
 				// Use the correct install log path with server UUID
 				installLogPath := filepath.Join(installLogDir, trnsfr.Server.ID()+".log")
-				
+
 				// Create the install log file
 				installLogFile, err := os.Create(installLogPath)
 				if err != nil {
@@ -228,7 +227,7 @@ out:
 					trnsfr.Log().WithError(err).Warn("failed to create install log file, skipping")
 					break
 				}
-				
+
 				// Stream the install logs to file
 				if _, err := io.Copy(installLogFile, p); err != nil {
 					installLogFile.Close()
@@ -236,14 +235,14 @@ out:
 					trnsfr.Log().WithError(err).Warn("failed to stream install logs to file, skipping")
 					break
 				}
-				
+
 				if err := installLogFile.Close(); err != nil {
 					// Don't fail transfer for install logs, just log and continue
 					trnsfr.Log().WithError(err).Warn("failed to close install log file")
 				}
-				
+
 				trnsfr.Log().WithField("path", installLogPath).Debug("install logs saved successfully")
-				
+
 			case strings.HasPrefix(name, "backup_"):
 				backupName := strings.TrimPrefix(name, "backup_")
 				trnsfr.Log().WithField("backup", backupName).Debug("received backup file")

@@ -15,11 +15,12 @@ import (
 	"github.com/gammazero/workerpool"
 	"github.com/goccy/go-json"
 
-	"github.com/pelican-dev/wings/config"
-	"github.com/pelican-dev/wings/environment"
-	"github.com/pelican-dev/wings/environment/docker"
-	"github.com/pelican-dev/wings/remote"
-	"github.com/pelican-dev/wings/server/filesystem"
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/environment"
+	"github.com/exonical/wings/environment/docker"
+	"github.com/exonical/wings/environment/kubernetes"
+	"github.com/exonical/wings/remote"
+	"github.com/exonical/wings/server/filesystem"
 )
 
 type Manager struct {
@@ -201,9 +202,6 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 		return nil, errors.WithStackIf(err)
 	}
 
-	// Right now we only support a Docker based environment, so I'm going to hard code
-	// this logic in. When we're ready to support other environment we'll need to make
-	// some modifications here, obviously.
 	settings := environment.Settings{
 		Mounts:      s.Mounts(),
 		Allocations: s.cfg.Allocations,
@@ -212,15 +210,27 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 	}
 
 	envCfg := environment.NewConfiguration(settings, s.GetEnvironmentVariables())
-	meta := docker.Metadata{
-		Image: s.Config().Container.Image,
-	}
 
-	if env, err := docker.New(s.ID(), &meta, envCfg); err != nil {
-		return nil, err
+	if config.Get().Kubernetes.Enabled {
+		meta := kubernetes.Metadata{
+			Image: s.Config().Container.Image,
+		}
+		if env, err := kubernetes.New(s.ID(), &meta, envCfg); err != nil {
+			return nil, err
+		} else {
+			s.Environment = env
+			s.StartEventListeners()
+		}
 	} else {
-		s.Environment = env
-		s.StartEventListeners()
+		meta := docker.Metadata{
+			Image: s.Config().Container.Image,
+		}
+		if env, err := docker.New(s.ID(), &meta, envCfg); err != nil {
+			return nil, err
+		} else {
+			s.Environment = env
+			s.StartEventListeners()
+		}
 	}
 
 	// If the server's data directory exists, force disk usage calculation.

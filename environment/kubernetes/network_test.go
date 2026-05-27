@@ -1,0 +1,334 @@
+package kubernetes
+
+import (
+	"context"
+	"testing"
+
+	. "github.com/franela/goblin"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/environment"
+	"github.com/exonical/wings/events"
+	"github.com/exonical/wings/system"
+)
+
+func newTestEnv(client *fake.Clientset, allocs environment.Allocations) *Environment {
+	settings := environment.Settings{
+		Allocations: allocs,
+		Limits: environment.Limits{
+			MemoryLimit: 512,
+			CpuLimit:    100,
+		},
+	}
+	cfg := environment.NewConfiguration(settings, []string{"FOO=bar"})
+
+	return &Environment{
+		Id:            "test-server-uuid",
+		Configuration: cfg,
+		meta:          &Metadata{Image: "nginx:latest"},
+		client:        client,
+		st:            system.NewAtomicString(environment.ProcessOfflineState),
+		emitter:       events.NewBus(),
+	}
+}
+
+func TestNetwork(t *testing.T) {
+	g := Goblin(t)
+
+	g.Describe("EnsureService", func() {
+		g.It("should be a no-op in hostport mode", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{
+				Mappings: map[string][]int{"0.0.0.0": {25565}},
+			}
+			env := newTestEnv(client, allocs)
+
+			// Set hostport mode.
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkHostPort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			// No Service should be created.
+			svcs, _ := client.CoreV1().Services("pelican").List(context.Background(), metav1.ListOptions{})
+			g.Assert(len(svcs.Items)).Equal(0)
+		})
+
+		g.It("should create a NodePort service in nodeport mode", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{
+				Mappings: map[string][]int{"0.0.0.0": {25565, 25575}},
+			}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			g.Assert(svc.Spec.Type).Equal(corev1.ServiceTypeNodePort)
+			// Should have TCP+UDP for each port = 4 ports total.
+			g.Assert(len(svc.Spec.Ports)).Equal(4)
+
+			// Verify selector targets our Pod.
+			g.Assert(svc.Spec.Selector["pelican.dev/server-id"]).Equal("test-server-uuid")
+
+			// Verify labels.
+			g.Assert(svc.Labels["pelican.dev/server-id"]).Equal("test-server-uuid")
+			g.Assert(svc.Labels["pelican.dev/resource-type"]).Equal("service")
+		})
+
+		g.It("should update an existing service", func() {
+			// Pre-create a service with one port.
+			existingSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gs-test-server-uuid",
+					Namespace: "pelican",
+				},
+				Spec: corev1.ServiceSpec{
+					Type: corev1.ServiceTypeNodePort,
+					Ports: []corev1.ServicePort{
+						{
+							Name:     "tcp-0-0-0-0-255",
+							Protocol: corev1.ProtocolTCP,
+							Port:     25565,
+							NodePort: 31000,
+						},
+					},
+					Selector: map[string]string{"pelican.dev/server-id": "test-server-uuid"},
+				},
+			}
+			client := fake.NewSimpleClientset(existingSvc)
+			allocs := environment.Allocations{
+				Mappings: map[string][]int{"0.0.0.0": {25565, 25575}},
+			}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			// Should now have 4 ports (2 for each allocation, TCP+UDP).
+			g.Assert(len(svc.Spec.Ports)).Equal(4)
+		})
+
+		g.It("should be a no-op with empty allocations", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{
+				Mappings: map[string][]int{},
+			}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svcs, _ := client.CoreV1().Services("pelican").List(context.Background(), metav1.ListOptions{})
+			g.Assert(len(svcs.Items)).Equal(0)
+		})
+	})
+
+	g.Describe("DeleteService", func() {
+		g.It("should delete an existing service", func() {
+			existingSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gs-test-server-uuid",
+					Namespace: "pelican",
+				},
+				Spec: corev1.ServiceSpec{
+					Type: corev1.ServiceTypeNodePort,
+				},
+			}
+			client := fake.NewSimpleClientset(existingSvc)
+			allocs := environment.Allocations{}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			err := env.DeleteService(context.Background())
+			g.Assert(err).IsNil()
+
+			svcs, _ := client.CoreV1().Services("pelican").List(context.Background(), metav1.ListOptions{})
+			g.Assert(len(svcs.Items)).Equal(0)
+		})
+
+		g.It("should not error when service does not exist", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			err := env.DeleteService(context.Background())
+			g.Assert(err).IsNil()
+		})
+
+		g.It("should be a no-op in hostport mode", func() {
+			existingSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gs-test-server-uuid",
+					Namespace: "pelican",
+				},
+			}
+			client := fake.NewSimpleClientset(existingSvc)
+			allocs := environment.Allocations{}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkHostPort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			err := env.DeleteService(context.Background())
+			g.Assert(err).IsNil()
+
+			// Service should still exist since delete is no-op in hostport mode.
+			svcs, _ := client.CoreV1().Services("pelican").List(context.Background(), metav1.ListOptions{})
+			g.Assert(len(svcs.Items)).Equal(1)
+		})
+	})
+
+	g.Describe("GetServiceNodePorts", func() {
+		g.It("should return assigned NodePorts", func() {
+			existingSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gs-test-server-uuid",
+					Namespace: "pelican",
+				},
+				Spec: corev1.ServiceSpec{
+					Type: corev1.ServiceTypeNodePort,
+					Ports: []corev1.ServicePort{
+						{Name: "tcp-25565", Port: 25565, NodePort: 31234, Protocol: corev1.ProtocolTCP},
+						{Name: "udp-25575", Port: 25575, NodePort: 31235, Protocol: corev1.ProtocolUDP},
+					},
+				},
+			}
+			client := fake.NewSimpleClientset(existingSvc)
+			allocs := environment.Allocations{}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.Namespace = "pelican"
+			})
+
+			ports, err := env.GetServiceNodePorts(context.Background())
+			g.Assert(err).IsNil()
+			g.Assert(ports[25565]).Equal(int32(31234))
+			g.Assert(ports[25575]).Equal(int32(31235))
+		})
+
+		g.It("should return nil in hostport mode", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkHostPort
+			})
+
+			ports, err := env.GetServiceNodePorts(context.Background())
+			g.Assert(err).IsNil()
+			g.Assert(ports == nil).IsTrue()
+		})
+	})
+
+	g.Describe("sanitizePortName", func() {
+		g.It("should lowercase and replace dots with hyphens", func() {
+			g.Assert(sanitizePortName("TCP-192.168.1.1-25565")).Equal("tcp-192-168-1-1")
+		})
+
+		g.It("should truncate to 15 characters", func() {
+			result := sanitizePortName("very-long-port-name-that-exceeds")
+			g.Assert(len(result) <= 15).IsTrue()
+		})
+
+		g.It("should not start or end with a hyphen", func() {
+			result := sanitizePortName("-invalid-name-")
+			g.Assert(result[0] != '-').IsTrue()
+			g.Assert(result[len(result)-1] != '-').IsTrue()
+		})
+
+		g.It("should return 'port' for empty input", func() {
+			g.Assert(sanitizePortName("")).Equal("port")
+		})
+	})
+
+	g.Describe("portName", func() {
+		g.It("should produce unique names for different ports", func() {
+			g.Assert(portName("tcp", 27015)).Equal("tcp-27015")
+			g.Assert(portName("tcp", 27016)).Equal("tcp-27016")
+			g.Assert(portName("udp", 27015)).Equal("udp-27015")
+		})
+
+		g.It("should fit within 15-char limit for 5-digit ports", func() {
+			name := portName("tcp", 65535)
+			g.Assert(len(name) <= 15).IsTrue()
+			g.Assert(name).Equal("tcp-65535")
+		})
+	})
+
+	g.Describe("mergeServicePorts", func() {
+		g.It("should preserve existing NodePorts for unchanged ports", func() {
+			existing := []corev1.ServicePort{
+				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31000},
+			}
+			desired := []corev1.ServicePort{
+				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 0},
+			}
+			merged := mergeServicePorts(existing, desired)
+			g.Assert(len(merged)).Equal(1)
+			g.Assert(merged[0].NodePort).Equal(int32(31000))
+		})
+
+		g.It("should use desired NodePort when explicitly set", func() {
+			existing := []corev1.ServicePort{
+				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31000},
+			}
+			desired := []corev1.ServicePort{
+				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31500},
+			}
+			merged := mergeServicePorts(existing, desired)
+			g.Assert(merged[0].NodePort).Equal(int32(31500))
+		})
+
+		g.It("should add new ports", func() {
+			existing := []corev1.ServicePort{
+				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31000},
+			}
+			desired := []corev1.ServicePort{
+				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 0},
+				{Name: "tcp-25575", Protocol: corev1.ProtocolTCP, Port: 25575, NodePort: 0},
+			}
+			merged := mergeServicePorts(existing, desired)
+			g.Assert(len(merged)).Equal(2)
+		})
+	})
+}

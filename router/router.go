@@ -3,11 +3,11 @@ package router
 import (
 	"emperror.dev/errors"
 	"github.com/apex/log"
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/remote"
+	"github.com/exonical/wings/router/middleware"
+	wserver "github.com/exonical/wings/server"
 	"github.com/gin-gonic/gin"
-	"github.com/pelican-dev/wings/config"
-	"github.com/pelican-dev/wings/remote"
-	"github.com/pelican-dev/wings/router/middleware"
-	wserver "github.com/pelican-dev/wings/server"
 )
 
 // Configure configures the routing infrastructure for this daemon instance.

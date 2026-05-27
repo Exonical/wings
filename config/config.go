@@ -25,7 +25,7 @@ import (
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v2"
 
-	"github.com/pelican-dev/wings/system"
+	"github.com/exonical/wings/system"
 )
 
 const DefaultLocation = "/etc/pelican/config.yml"
@@ -344,6 +344,11 @@ type Configuration struct {
 	Api    ApiConfiguration    `json:"api" yaml:"api"`
 	System SystemConfiguration `json:"system" yaml:"system"`
 	Docker DockerConfiguration `json:"docker" yaml:"docker"`
+
+	// Kubernetes holds configuration for scheduling game server workloads as
+	// Kubernetes Pods. When Kubernetes.Enabled is true, all servers on this
+	// node are run in K8s instead of Docker.
+	Kubernetes KubernetesConfiguration `json:"kubernetes" yaml:"kubernetes"`
 
 	// Defines internal throttling configurations for server processes to prevent
 	// someone from running an endless loop that spams data to logs.

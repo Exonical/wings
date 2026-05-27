@@ -1,16 +1,17 @@
 package filesystem
 
 import (
-	"golang.org/x/sys/unix"
-	"slices"	
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"emperror.dev/errors"
 	"github.com/apex/log"
 
-	"github.com/pelican-dev/wings/internal/ufs"
+	"github.com/exonical/wings/internal/ufs"
 )
 
 type SpaceCheckingOpts struct {
@@ -165,9 +166,9 @@ func (fs *Filesystem) DirectorySize(root string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	
+
 	var hardLinks []uint64
-	
+
 	var size atomic.Int64
 	err = fs.unixFS.WalkDirat(dirfd, name, func(dirfd int, name, _ string, d ufs.DirEntry, err error) error {
 		if err != nil {
@@ -194,7 +195,7 @@ func (fs *Filesystem) DirectorySize(root string) (int64, error) {
 				hardLinks = append(hardLinks, sysFileInfo.Ino)
 			}
 		}
-		
+
 		size.Add(info.Size())
 		return nil
 	})

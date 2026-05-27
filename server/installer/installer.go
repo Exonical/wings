@@ -2,11 +2,12 @@ package installer
 
 import (
 	"context"
+
 	"emperror.dev/errors"
 	"github.com/asaskevich/govalidator"
 
-	"github.com/pelican-dev/wings/remote"
-	"github.com/pelican-dev/wings/server"
+	"github.com/exonical/wings/remote"
+	"github.com/exonical/wings/server"
 )
 
 type Installer struct {

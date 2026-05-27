@@ -22,10 +22,10 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/parsers/kernel"
 
-	"github.com/pelican-dev/wings/config"
-	"github.com/pelican-dev/wings/environment"
-	"github.com/pelican-dev/wings/remote"
-	"github.com/pelican-dev/wings/system"
+	"github.com/exonical/wings/config"
+	"github.com/exonical/wings/environment"
+	"github.com/exonical/wings/remote"
+	"github.com/exonical/wings/system"
 )
 
 // Install executes the installation stack for a server process. Bubbles any
@@ -103,6 +103,12 @@ func (s *Server) internalInstall() error {
 	if err != nil {
 		return err
 	}
+
+	// Route to the Kubernetes-based installer when K8s is enabled.
+	if config.Get().Kubernetes.Enabled {
+		return s.internalInstallKubernetes(&script)
+	}
+
 	p, err := NewInstallationProcess(s, &script)
 	if err != nil {
 		return err

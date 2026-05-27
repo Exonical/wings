@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/pelican-dev/wings/internal/models"
+	"github.com/exonical/wings/internal/models"
 
 	"emperror.dev/errors"
 	"github.com/apex/log"
