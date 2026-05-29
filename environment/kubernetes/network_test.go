@@ -147,6 +147,94 @@ func TestNetwork(t *testing.T) {
 			svcs, _ := client.CoreV1().Services("pelican").List(context.Background(), metav1.ListOptions{})
 			g.Assert(len(svcs.Items)).Equal(0)
 		})
+
+		g.It("should auto-set LB IP and sharing-key annotations from allocation IP", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{
+				DefaultMapping: &environment.DefaultAllocationMapping{
+					Ip:   "23.227.184.222",
+					Port: 27015,
+				},
+				Mappings: map[string][]int{"23.227.184.222": {27015}},
+			}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkLoadBalancer
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.LBAnnotations = map[string]string{
+					"io.cilium/lb-ipam-pool": "game-servers",
+				}
+				c.Kubernetes.LBIPAnnotation = "lbipam.cilium.io/ips"
+				c.Kubernetes.LBSharingKey = "lbipam.cilium.io/sharing-key"
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			g.Assert(svc.Spec.Type).Equal(corev1.ServiceTypeLoadBalancer)
+			g.Assert(svc.Annotations["io.cilium/lb-ipam-pool"]).Equal("game-servers")
+			g.Assert(svc.Annotations["lbipam.cilium.io/ips"]).Equal("23.227.184.222")
+			g.Assert(svc.Annotations["lbipam.cilium.io/sharing-key"]).Equal("23.227.184.222")
+		})
+
+		g.It("should not set IP annotations when allocation IP is 0.0.0.0", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{
+				DefaultMapping: &environment.DefaultAllocationMapping{
+					Ip:   "0.0.0.0",
+					Port: 27015,
+				},
+				Mappings: map[string][]int{"0.0.0.0": {27015}},
+			}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkLoadBalancer
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.LBIPAnnotation = "lbipam.cilium.io/ips"
+				c.Kubernetes.LBSharingKey = "lbipam.cilium.io/sharing-key"
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			_, hasIP := svc.Annotations["lbipam.cilium.io/ips"]
+			g.Assert(hasIP).IsFalse()
+			_, hasKey := svc.Annotations["lbipam.cilium.io/sharing-key"]
+			g.Assert(hasKey).IsFalse()
+		})
+
+		g.It("should not set IP annotations when config keys are empty", func() {
+			client := fake.NewSimpleClientset()
+			allocs := environment.Allocations{
+				DefaultMapping: &environment.DefaultAllocationMapping{
+					Ip:   "23.227.184.222",
+					Port: 27015,
+				},
+				Mappings: map[string][]int{"23.227.184.222": {27015}},
+			}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkLoadBalancer
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.LBIPAnnotation = ""
+				c.Kubernetes.LBSharingKey = ""
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			_, hasIP := svc.Annotations["lbipam.cilium.io/ips"]
+			g.Assert(hasIP).IsFalse()
+		})
 	})
 
 	g.Describe("DeleteService", func() {

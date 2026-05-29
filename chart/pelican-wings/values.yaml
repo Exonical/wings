@@ -85,6 +85,14 @@ wings:
     #   lbAnnotations:
     #     io.cilium/lb-ipam-pool: "game-servers"
     lbAnnotations: {}
+    # -- Annotation key Wings sets to the server's allocation IP on each LB Service.
+    # This pins the LB to the IP selected in the Panel so multiple servers share one IP.
+    # Cilium: "lbipam.cilium.io/ips"  |  MetalLB: "metallb.universe.tf/loadBalancerIPs"
+    lbIPAnnotation: ""
+    # -- Annotation key for LB IP sharing. Wings sets the value to the allocation IP,
+    # grouping all servers on the same IP under one sharing key.
+    # Cilium: "lbipam.cilium.io/sharing-key"  |  MetalLB: "metallb.universe.tf/allow-shared-ip"
+    lbSharingKey: ""
     # -- Storage mode: "hostpath" or "pvc"
     storageMode: pvc
     # -- StorageClass for PVCs (empty = cluster default)
