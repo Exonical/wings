@@ -145,13 +145,8 @@ func (e *Environment) EnsureService(ctx context.Context) error {
 	existing.Labels = labels
 
 	e.log().WithField("service", svcName).Infof("updating %s service for server", svcType)
-	if isLB && len(annotations) > 0 {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string)
-		}
-		for k, v := range annotations {
-			existing.Annotations[k] = v
-		}
+	if isLB {
+		existing.Annotations = annotations
 	}
 	_, err = e.client.CoreV1().Services(ns).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {

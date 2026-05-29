@@ -235,6 +235,60 @@ func TestNetwork(t *testing.T) {
 			_, hasIP := svc.Annotations["lbipam.cilium.io/ips"]
 			g.Assert(hasIP).IsFalse()
 		})
+
+		g.It("should remove stale IP annotations when allocation IP becomes invalid", func() {
+			existingSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gs-test-server-uuid",
+					Namespace: "pelican",
+					Annotations: map[string]string{
+						"io.cilium/lb-ipam-pool":        "game-servers",
+						"lbipam.cilium.io/ips":          "23.227.184.222",
+						"lbipam.cilium.io/sharing-key":  "23.227.184.222",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Type: corev1.ServiceTypeLoadBalancer,
+					Ports: []corev1.ServicePort{
+						{Name: "tcp-27015", Protocol: corev1.ProtocolTCP, Port: 27015},
+						{Name: "udp-27015", Protocol: corev1.ProtocolUDP, Port: 27015},
+					},
+					Selector: map[string]string{"pelican.dev/server-id": "test-server-uuid"},
+				},
+			}
+			client := fake.NewSimpleClientset(existingSvc)
+			allocs := environment.Allocations{
+				DefaultMapping: &environment.DefaultAllocationMapping{
+					Ip:   "0.0.0.0",
+					Port: 27015,
+				},
+				Mappings: map[string][]int{"0.0.0.0": {27015}},
+			}
+			env := newTestEnv(client, allocs)
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkLoadBalancer
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.LBAnnotations = map[string]string{
+					"io.cilium/lb-ipam-pool": "game-servers",
+				}
+				c.Kubernetes.LBIPAnnotation = "lbipam.cilium.io/ips"
+				c.Kubernetes.LBSharingKey = "lbipam.cilium.io/sharing-key"
+			})
+
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			// Pool annotation should remain.
+			g.Assert(svc.Annotations["io.cilium/lb-ipam-pool"]).Equal("game-servers")
+			// IP-pinning annotations should be removed.
+			_, hasIP := svc.Annotations["lbipam.cilium.io/ips"]
+			g.Assert(hasIP).IsFalse()
+			_, hasKey := svc.Annotations["lbipam.cilium.io/sharing-key"]
+			g.Assert(hasKey).IsFalse()
+		})
 	})
 
 	g.Describe("DeleteService", func() {
