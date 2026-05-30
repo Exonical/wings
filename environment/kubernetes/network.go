@@ -91,8 +91,21 @@ func (e *Environment) EnsureService(ctx context.Context) error {
 	var annotations map[string]string
 	if isLB {
 		svcType = corev1.ServiceTypeLoadBalancer
-		if len(cfg.Kubernetes.LBAnnotations) > 0 {
-			annotations = cfg.Kubernetes.LBAnnotations
+		annotations = make(map[string]string)
+		for k, v := range cfg.Kubernetes.LBAnnotations {
+			annotations[k] = v
+		}
+
+		// Auto-set IP-pinning and sharing-key annotations from the
+		// server's allocation IP so the LB is bound to the IP the user
+		// selected in the Panel.
+		if allocIP := e.allocationIP(); allocIP != "" {
+			if cfg.Kubernetes.LBIPAnnotation != "" {
+				annotations[cfg.Kubernetes.LBIPAnnotation] = allocIP
+			}
+			if cfg.Kubernetes.LBSharingKey != "" {
+				annotations[cfg.Kubernetes.LBSharingKey] = allocIP
+			}
 		}
 	}
 
@@ -132,13 +145,8 @@ func (e *Environment) EnsureService(ctx context.Context) error {
 	existing.Labels = labels
 
 	e.log().WithField("service", svcName).Infof("updating %s service for server", svcType)
-	if isLB && len(annotations) > 0 {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string)
-		}
-		for k, v := range annotations {
-			existing.Annotations[k] = v
-		}
+	if isLB {
+		existing.Annotations = annotations
 	}
 	_, err = e.client.CoreV1().Services(ns).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
@@ -341,4 +349,19 @@ func sanitizePortName(name string) string {
 // and avoids collisions that occur when long IP strings are truncated.
 func portName(proto string, port int) string {
 	return sanitizePortName(fmt.Sprintf("%s-%d", proto, port))
+}
+
+// allocationIP returns the server's default allocation IP if it is a usable
+// public/external address. Returns empty for 0.0.0.0, 127.0.0.1, or when
+// no default allocation is configured.
+func (e *Environment) allocationIP() string {
+	allocs := e.Configuration.Allocations()
+	if allocs.DefaultMapping == nil {
+		return ""
+	}
+	ip := allocs.DefaultMapping.Ip
+	if ip == "" || ip == "0.0.0.0" || ip == "127.0.0.1" {
+		return ""
+	}
+	return ip
 }

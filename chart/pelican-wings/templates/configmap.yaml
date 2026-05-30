@@ -32,6 +32,12 @@ data:
       lb_annotations:
         {{- toYaml .Values.wings.kubernetes.lbAnnotations | nindent 8 }}
       {{- end }}
+      {{- if .Values.wings.kubernetes.lbIPAnnotation }}
+      lb_ip_annotation: {{ .Values.wings.kubernetes.lbIPAnnotation | quote }}
+      {{- end }}
+      {{- if .Values.wings.kubernetes.lbSharingKey }}
+      lb_sharing_key: {{ .Values.wings.kubernetes.lbSharingKey | quote }}
+      {{- end }}
       storage_mode: {{ .Values.wings.kubernetes.storageMode | quote }}
       {{- if .Values.wings.kubernetes.storageClass }}
       storage_class: {{ .Values.wings.kubernetes.storageClass | quote }}

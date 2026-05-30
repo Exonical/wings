@@ -99,6 +99,29 @@ type KubernetesConfiguration struct {
 	//     metallb.universe.tf/address-pool: "game-servers"
 	LBAnnotations map[string]string `json:"lb_annotations" yaml:"lb_annotations"`
 
+	// LBIPAnnotation is the annotation key that Wings sets to the server's
+	// allocation IP on each LoadBalancer Service. This pins the LB to the IP
+	// the user selected in the Panel, enabling multiple game servers to share
+	// the same external IP (on different ports).
+	//
+	// Common values:
+	//   Cilium:  "lbipam.cilium.io/ips"
+	//   MetalLB: "metallb.universe.tf/loadBalancerIPs"
+	//
+	// When empty (default), no IP-pinning annotation is added.
+	LBIPAnnotation string `default:"" json:"lb_ip_annotation" yaml:"lb_ip_annotation"`
+
+	// LBSharingKey is the annotation key used to allow multiple Services to
+	// share the same external IP. Wings sets this annotation to the allocation
+	// IP value, grouping all game servers on the same IP under one sharing key.
+	//
+	// Common values:
+	//   Cilium:  "lbipam.cilium.io/sharing-key"
+	//   MetalLB: "metallb.universe.tf/allow-shared-ip"
+	//
+	// When empty (default), no sharing-key annotation is added.
+	LBSharingKey string `default:"" json:"lb_sharing_key" yaml:"lb_sharing_key"`
+
 	// Tolerations allow game server Pods to be scheduled on tainted nodes.
 	Tolerations []KubeToleration `json:"tolerations" yaml:"tolerations"`
 
