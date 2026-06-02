@@ -81,6 +81,9 @@ func (ip *InstallerProcess) Run(ctx context.Context) error {
 
 	cfg := config.Get()
 
+	// Determine install image and pull policy (mirrors the Docker backend).
+	installImage, installPullPolicy := resolveImagePullPolicy(ip.Script.ContainerImage)
+
 	// Build the Job spec.
 	backoffLimit := int32(0)
 	ttl := int32(300) // Auto-clean Job after 5 minutes.
@@ -111,7 +114,7 @@ func (ip *InstallerProcess) Run(ctx context.Context) error {
 					Containers: []corev1.Container{
 						{
 							Name:    "installer",
-							Image:   ip.Script.ContainerImage,
+							Image:   installImage,
 							Command: []string{ip.Script.Entrypoint, "/mnt/install/install.sh"},
 							Env:     envVars,
 							VolumeMounts: []corev1.VolumeMount{
@@ -121,7 +124,7 @@ func (ip *InstallerProcess) Run(ctx context.Context) error {
 									MountPath: "/mnt/install",
 								},
 							},
-							ImagePullPolicy: corev1.PullIfNotPresent,
+							ImagePullPolicy: installPullPolicy,
 						},
 					},
 					Volumes: ip.buildJobVolumes(cfg),

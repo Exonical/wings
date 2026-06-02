@@ -89,6 +89,19 @@ sed -i 's/namespace: pelican/namespace: my-namespace/g' kubernetes/*.yaml
 If you only use `storage_mode: hostpath`, you can remove the
 `persistentvolumeclaims` resource from `role.yaml`.
 
+### Image pulling
+
+By default, game server Pods and installation Jobs use `imagePullPolicy: Always`
+for remote images so updated tags are re-pulled instead of reusing a stale node
+cache (matching the Docker backend); `~`-prefixed local images are never pulled.
+For air-gapped clusters, pin the policy:
+
+```yaml
+# config.yml
+kubernetes:
+  image_pull_policy: IfNotPresent   # or "Never"
+```
+
 ### Disable metrics
 
 If you don't have metrics-server installed, you can skip the ClusterRole and

@@ -119,6 +119,10 @@ wings:
     tolerations: []
     # -- Image pull secrets for game server Pods
     imagePullSecrets: []
+    # -- Override pull policy for game server Pods and install Jobs:
+    # "Always", "IfNotPresent", or "Never". Empty = remote images use Always
+    # (re-pull updated tags, matching Docker), ~-local images use IfNotPresent.
+    imagePullPolicy: ""
 
 # -- Pod-level security context for the Wings Deployment
 podSecurityContext: {}

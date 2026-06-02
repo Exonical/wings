@@ -14,14 +14,31 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/exonical/wings/config"
 	"github.com/exonical/wings/environment"
 	"github.com/exonical/wings/system"
 )
+
+// resolveImagePullPolicy returns the cleaned image reference (without the ~
+// local-image prefix) and the pull policy to apply. It mirrors the Docker
+// backend, which always attempts to pull remote images before starting a
+// server so updated tags are picked up, while never pulling ~-prefixed local
+// images. A non-empty kubernetes.image_pull_policy config value overrides the
+// default (useful for air-gapped clusters).
+func resolveImagePullPolicy(image string) (string, corev1.PullPolicy) {
+	cleaned := strings.TrimPrefix(image, "~")
+	if override := config.Get().Kubernetes.ImagePullPolicy; override != "" {
+		return cleaned, corev1.PullPolicy(override)
+	}
+	if strings.HasPrefix(image, "~") {
+		return cleaned, corev1.PullIfNotPresent
+	}
+	return cleaned, corev1.PullAlways
+}
 
 // Create builds and creates the Pod for this game server in Kubernetes.
 // If the Pod already exists this is a no-op.
@@ -67,8 +84,8 @@ func (e *Environment) Create() error {
 		volumeMounts = append(volumeMounts, idMounts...)
 	}
 
-	// Determine image (strip ~ prefix used for local Docker images).
-	image := strings.TrimPrefix(e.meta.Image, "~")
+	// Determine image and pull policy (mirrors the Docker backend).
+	image, pullPolicy := resolveImagePullPolicy(e.meta.Image)
 
 	// Build container ports from allocations.
 	containerPorts := e.buildContainerPorts()
@@ -131,7 +148,7 @@ func (e *Environment) Create() error {
 					VolumeMounts:    volumeMounts,
 					Stdin:           true,
 					TTY:             true,
-					ImagePullPolicy: corev1.PullIfNotPresent,
+					ImagePullPolicy: pullPolicy,
 				},
 			},
 			Volumes: volumes,
@@ -558,5 +575,3 @@ func isPodRunning(pod *corev1.Pod) bool {
 	}
 	return false
 }
-
-

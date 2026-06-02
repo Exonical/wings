@@ -48,6 +48,13 @@ type KubernetesConfiguration struct {
 	// images in game server Pods.
 	ImagePullSecrets []string `json:"image_pull_secrets" yaml:"image_pull_secrets"`
 
+	// ImagePullPolicy overrides the pull policy applied to game server Pods
+	// and installation Jobs. Valid values are "Always", "IfNotPresent", and
+	// "Never". When empty, remote images use "Always" (so updated tags are
+	// re-pulled, matching the Docker backend) and ~-prefixed local images use
+	// "IfNotPresent". Set to "IfNotPresent" or "Never" for air-gapped clusters.
+	ImagePullPolicy string `default:"" json:"image_pull_policy" yaml:"image_pull_policy"`
+
 	// ServiceAccount is the name of the Kubernetes ServiceAccount assigned to
 	// game server Pods.
 	ServiceAccount string `default:"" json:"service_account" yaml:"service_account"`

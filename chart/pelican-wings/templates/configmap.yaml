@@ -71,3 +71,6 @@ data:
       image_pull_secrets:
         {{- toYaml .Values.wings.kubernetes.imagePullSecrets | nindent 8 }}
       {{- end }}
+      {{- if .Values.wings.kubernetes.imagePullPolicy }}
+      image_pull_policy: {{ .Values.wings.kubernetes.imagePullPolicy | quote }}
+      {{- end }}

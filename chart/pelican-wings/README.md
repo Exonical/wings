@@ -37,6 +37,7 @@ See [values.yaml](values.yaml) for the full list of configurable values.
 | `wings.kubernetes.storageMode` | Storage: `hostpath` or `pvc` | `pvc` |
 | `wings.kubernetes.storageClass` | StorageClass for PVCs | `""` (cluster default) |
 | `wings.kubernetes.storageSize` | Default PVC size | `10Gi` |
+| `wings.kubernetes.imagePullPolicy` | Pull policy for game server Pods/install Jobs: `Always`, `IfNotPresent`, `Never` | `""` (smart default) |
 | `gameNamespace` | Namespace for game server resources | `pelican` |
 | `rbac.create` | Create RBAC resources | `true` |
 | `serviceAccount.create` | Create ServiceAccount | `true` |
@@ -74,6 +75,22 @@ wings:
   kubernetes:
     networkMode: hostport
 ```
+
+### Image pulling
+
+Game server Pods and installation Jobs default to `imagePullPolicy: Always`
+for remote images, so updated tags are re-pulled rather than reusing a stale
+copy cached on the node (matching the Docker backend). `~`-prefixed local
+images are never pulled. Override this for air-gapped clusters:
+
+```yaml
+wings:
+  kubernetes:
+    imagePullPolicy: IfNotPresent  # or "Never"
+```
+
+This is independent of `image.pullPolicy`, which applies to the Wings daemon
+image itself.
 
 ## What Gets Created
 
