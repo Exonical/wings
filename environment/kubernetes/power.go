@@ -117,6 +117,23 @@ func (e *Environment) Stop(ctx context.Context) error {
 // terminate. If the timeout is reached and terminate is true, the Pod is
 // forcefully deleted.
 func (e *Environment) WaitForStop(ctx context.Context, duration time.Duration, terminate bool) error {
+	// If the Pod is already gone, or exists but is no longer running, the server
+	// is effectively stopped and there is nothing to wait for. A stopped Pod is
+	// not automatically removed, so proceeding into waitForPodDeletion would block
+	// for the full duration (holding the power lock) waiting for a deletion that
+	// never happens. This is what gets hit when a stop/restart is issued against a
+	// server that is already offline.
+	if pod, err := e.getPod(ctx); err != nil {
+		if isNotFound(err) {
+			e.markOffline()
+			return nil
+		}
+		// Fall through on unexpected errors and attempt the normal stop flow.
+	} else if !isPodRunning(pod) {
+		e.markOffline()
+		return nil
+	}
+
 	tctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 
@@ -161,10 +178,7 @@ func (e *Environment) Terminate(ctx context.Context, signal string) error {
 	}
 
 	if !isPodRunning(pod) {
-		if e.st.Load() != environment.ProcessOfflineState {
-			e.SetState(environment.ProcessStoppingState)
-			e.SetState(environment.ProcessOfflineState)
-		}
+		e.markOffline()
 		return nil
 	}
 
@@ -180,6 +194,16 @@ func (e *Environment) Terminate(ctx context.Context, signal string) error {
 
 	e.SetState(environment.ProcessOfflineState)
 	return nil
+}
+
+// markOffline transitions the environment to the offline state, first passing
+// through the stopping state so that crash detection is not triggered. It is a
+// no-op if the environment already considers itself offline.
+func (e *Environment) markOffline() {
+	if e.st.Load() != environment.ProcessOfflineState {
+		e.SetState(environment.ProcessStoppingState)
+		e.SetState(environment.ProcessOfflineState)
+	}
 }
 
 // waitForPodRunning blocks until the Pod reaches Running phase or the context
