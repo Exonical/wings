@@ -30,6 +30,11 @@ serviceAccount:
 rbac:
   # -- Whether to create RBAC resources (Role, RoleBinding, ClusterRole, ClusterRoleBinding)
   create: true
+  # -- Grant the cluster-wide nodes/proxy permission so Wings can read resource
+  # metrics directly from the kubelet stats/summary API when metrics-server is
+  # not installed. This is a broad, cluster-scoped permission; leave it off and
+  # install metrics-server unless you specifically need the kubelet fallback.
+  kubeletMetricsFallback: false
 
 # -- Namespace for game server resources (Pods, Services, Jobs, PVCs)
 gameNamespace: pelican
@@ -119,6 +124,10 @@ wings:
     tolerations: []
     # -- Image pull secrets for game server Pods
     imagePullSecrets: []
+    # -- Override pull policy for game server Pods and install Jobs:
+    # "Always", "IfNotPresent", or "Never". Empty = remote images use Always
+    # (re-pull updated tags, matching Docker), ~-local images use IfNotPresent.
+    imagePullPolicy: ""
 
 # -- Pod-level security context for the Wings Deployment
 podSecurityContext: {}

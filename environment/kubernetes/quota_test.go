@@ -2,19 +2,24 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	. "github.com/franela/goblin"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/exonical/wings/config"
 	"github.com/exonical/wings/environment"
 	"github.com/exonical/wings/system"
 )
 
+// TestQuota covers building and reconciling ResourceQuota and LimitRange
+// objects from configuration, including invalid-quantity error handling.
 func TestQuota(t *testing.T) {
 	g := Goblin(t)
 
@@ -146,6 +151,26 @@ func TestQuota(t *testing.T) {
 				memLimit := rq.Spec.Hard[corev1.ResourceLimitsMemory]
 				g.Assert(memLimit.Cmp(resource.MustParse("64Gi"))).Equal(0)
 			})
+
+			g.It("should fail fast on a non-NotFound Get error instead of creating", func() {
+				client := fake.NewSimpleClientset()
+				client.PrependReactor("get", "resourcequotas", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, errors.New("boom: api server unavailable")
+				})
+				env := &Environment{
+					Id:     "quota-geterr-uuid",
+					client: client,
+					st:     system.NewAtomicString(environment.ProcessOfflineState),
+				}
+				config.Update(func(c *config.Configuration) {
+					c.Kubernetes.Namespace = "pelican"
+					c.Kubernetes.ResourceQuota.Enabled = true
+					c.Kubernetes.ResourceQuota.CPULimit = "16"
+				})
+
+				err := env.EnsureResourceQuota(context.Background())
+				g.Assert(err != nil).IsTrue()
+			})
 		})
 
 		g.Describe("EnsureLimitRange", func() {
@@ -254,6 +279,26 @@ func TestQuota(t *testing.T) {
 				defaultCPU := lr.Spec.Limits[0].Default[corev1.ResourceCPU]
 				g.Assert(defaultCPU.Cmp(resource.MustParse("4"))).Equal(0)
 			})
+
+			g.It("should fail fast on a non-NotFound Get error instead of creating", func() {
+				client := fake.NewSimpleClientset()
+				client.PrependReactor("get", "limitranges", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, errors.New("boom: api server unavailable")
+				})
+				env := &Environment{
+					Id:     "lr-geterr-uuid",
+					client: client,
+					st:     system.NewAtomicString(environment.ProcessOfflineState),
+				}
+				config.Update(func(c *config.Configuration) {
+					c.Kubernetes.Namespace = "pelican"
+					c.Kubernetes.LimitRange.Enabled = true
+					c.Kubernetes.LimitRange.DefaultCPULimit = "2"
+				})
+
+				err := env.EnsureLimitRange(context.Background())
+				g.Assert(err != nil).IsTrue()
+			})
 		})
 
 		g.Describe("buildResourceQuota", func() {
@@ -264,7 +309,8 @@ func TestQuota(t *testing.T) {
 					MaxPods:     10,
 					MaxPVCs:     0,
 				}
-				rq := buildResourceQuota("test-ns", cfg)
+				rq, err := buildResourceQuota("test-ns", cfg)
+				g.Assert(err).IsNil()
 				g.Assert(rq.Namespace).Equal("test-ns")
 
 				_, hasCPU := rq.Spec.Hard[corev1.ResourceLimitsCPU]
@@ -289,7 +335,8 @@ func TestQuota(t *testing.T) {
 					MaxCPU:             "8",
 					MaxMemory:          "",
 				}
-				lr := buildLimitRange("test-ns", cfg)
+				lr, err := buildLimitRange("test-ns", cfg)
+				g.Assert(err).IsNil()
 				g.Assert(lr.Namespace).Equal("test-ns")
 				g.Assert(len(lr.Spec.Limits)).Equal(1)
 
@@ -305,6 +352,20 @@ func TestQuota(t *testing.T) {
 
 				_, hasMaxMem := item.Max[corev1.ResourceMemory]
 				g.Assert(hasMaxMem).IsFalse()
+			})
+
+			g.It("should return an error for an invalid quantity instead of panicking", func() {
+				lr, err := buildLimitRange("test-ns", &config.KubeLimitRange{DefaultCPULimit: "not-a-quantity"})
+				g.Assert(err != nil).IsTrue()
+				g.Assert(lr == nil).IsTrue()
+			})
+		})
+
+		g.Describe("buildResourceQuota invalid input", func() {
+			g.It("should return an error for an invalid quantity instead of panicking", func() {
+				rq, err := buildResourceQuota("test-ns", &config.KubeResourceQuota{CPULimit: "not-a-quantity"})
+				g.Assert(err != nil).IsTrue()
+				g.Assert(rq == nil).IsTrue()
 			})
 		})
 	})

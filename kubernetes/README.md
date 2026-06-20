@@ -33,21 +33,27 @@ Wings requires two levels of RBAC:
 
 | Resource                  | Verbs                          | Purpose                                  |
 |---------------------------|--------------------------------|------------------------------------------|
-| pods                      | get, create, delete, list      | Game server Pod lifecycle                |
+| pods                      | get, create, delete, list, watch | Game server Pod lifecycle              |
 | pods/log                  | get                            | Stream server console output             |
 | pods/attach               | create                         | Interactive console (SPDY attach)        |
-| services                  | get, create, update, delete    | NodePort Service management              |
+| services                  | get, create, update, delete, list | NodePort/LoadBalancer Service management |
 | jobs                      | get, create, delete            | Egg installation scripts                 |
-| configmaps                | get, create, delete            | Install script storage (multi-node)      |
+| configmaps                | get, create, update, delete    | Install script + identity files (multi-node) |
 | resourcequotas            | get, create, update            | Namespace resource limits (if enabled)   |
 | limitranges               | get, create, update            | Container default limits (if enabled)    |
 | persistentvolumeclaims    | get, create, update, delete, list | PVC storage lifecycle (if enabled)    |
 
 ### Cluster-scoped
 
-| Resource                              | Verbs | Purpose                         |
-|---------------------------------------|-------|---------------------------------|
-| pods (metrics.k8s.io/v1beta1)         | get   | CPU/memory usage polling        |
+| Resource                              | Verbs | Purpose                                                |
+|---------------------------------------|-------|--------------------------------------------------------|
+| pods (metrics.k8s.io/v1beta1)         | get   | CPU/memory usage polling                               |
+| nodes                                 | get   | Read node addresses for the IP-allocation endpoint     |
+| nodes/proxy *(optional)*              | get   | Kubelet stats fallback when metrics-server is absent   |
+
+> `nodes/proxy` is a broad, cluster-wide permission and is therefore **not**
+> granted by `clusterrole-metrics.yaml`. Apply `clusterrole-metrics-kubelet.yaml`
+> only if you do not run metrics-server and need the kubelet stats fallback.
 
 ## Files
 
@@ -55,8 +61,9 @@ Wings requires two levels of RBAC:
 - `serviceaccount.yaml` — ServiceAccount for Wings Pods
 - `role.yaml` — Namespace-scoped Role with required permissions
 - `rolebinding.yaml` — Binds the Role to the ServiceAccount
-- `clusterrole-metrics.yaml` — Cluster-scoped access to metrics API
+- `clusterrole-metrics.yaml` — Cluster-scoped access to the metrics API + node addresses
 - `clusterrolebinding-metrics.yaml` — Binds the ClusterRole to the ServiceAccount
+- `clusterrole-metrics-kubelet.yaml` — **Optional** `nodes/proxy` ClusterRole + binding for the kubelet stats fallback
 
 ## Configuration
 
@@ -89,6 +96,19 @@ sed -i 's/namespace: pelican/namespace: my-namespace/g' kubernetes/*.yaml
 If you only use `storage_mode: hostpath`, you can remove the
 `persistentvolumeclaims` resource from `role.yaml`.
 
+### Image pulling
+
+By default, game server Pods and installation Jobs use `imagePullPolicy: Always`
+for remote images so updated tags are re-pulled instead of reusing a stale node
+cache (matching the Docker backend); `~`-prefixed local images are never pulled.
+For air-gapped clusters, pin the policy:
+
+```yaml
+# config.yml
+kubernetes:
+  image_pull_policy: IfNotPresent   # or "Never"
+```
+
 ### Disable metrics
 
 If you don't have metrics-server installed, you can skip the ClusterRole and
@@ -98,4 +118,18 @@ ClusterRoleBinding. Wings will gracefully degrade (no CPU/memory stats).
 
 If you run multiple Wings nodes targeting different namespaces, create a Role and
 RoleBinding per namespace, but share the ClusterRole/ClusterRoleBinding (it's
-namespace-independent).
+namespace-independent). Give each instance its own ServiceAccount and use a
+distinct `ClusterRoleBinding` subject per ServiceAccount so the cluster-scoped
+metrics permission is granted to every Wings ServiceAccount that needs it.
+
+Do **not** point multiple Wings nodes at the same namespace: they share Pod/
+Service/Job names derived from server UUIDs and the namespaced ResourceQuota/
+LimitRange (`pelican-wings`), so concurrent reconciliation would conflict.
+
+### Helm-managed installs
+
+The Helm chart under `chart/pelican-wings` renders all of these resources (and a
+config **Secret**) for you. When `serviceAccount.create=false` you must set
+`serviceAccount.name` explicitly — the chart refuses to bind its RBAC to the
+namespace `default` ServiceAccount. Enable the kubelet fallback with
+`rbac.kubeletMetricsFallback=true`.
