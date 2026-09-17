@@ -26,7 +26,7 @@ func TestQuota(t *testing.T) {
 	g.Describe("ResourceQuota", func() {
 		g.Describe("EnsureResourceQuota", func() {
 			g.It("should be a no-op when disabled", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "quota-noop-uuid",
 					client: client,
@@ -45,7 +45,7 @@ func TestQuota(t *testing.T) {
 			})
 
 			g.It("should create a ResourceQuota with CPU and memory limits", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "quota-create-uuid",
 					client: client,
@@ -80,7 +80,7 @@ func TestQuota(t *testing.T) {
 			})
 
 			g.It("should create ResourceQuota with storage limits", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "quota-storage-uuid",
 					client: client,
@@ -123,7 +123,7 @@ func TestQuota(t *testing.T) {
 						},
 					},
 				}
-				client := fake.NewSimpleClientset(existingRQ)
+				client := fake.NewClientset(existingRQ)
 				env := &Environment{
 					Id:     "quota-update-uuid",
 					client: client,
@@ -152,9 +152,9 @@ func TestQuota(t *testing.T) {
 				g.Assert(memLimit.Cmp(resource.MustParse("64Gi"))).Equal(0)
 			})
 
-			g.It("should fail fast on a non-NotFound Get error instead of creating", func() {
-				client := fake.NewSimpleClientset()
-				client.PrependReactor("get", "resourcequotas", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			g.It("should propagate an Apply error", func() {
+				client := fake.NewClientset()
+				client.PrependReactor("patch", "resourcequotas", func(action k8stesting.Action) (bool, runtime.Object, error) {
 					return true, nil, errors.New("boom: api server unavailable")
 				})
 				env := &Environment{
@@ -175,7 +175,7 @@ func TestQuota(t *testing.T) {
 
 		g.Describe("EnsureLimitRange", func() {
 			g.It("should be a no-op when disabled", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "lr-noop-uuid",
 					client: client,
@@ -194,7 +194,7 @@ func TestQuota(t *testing.T) {
 			})
 
 			g.It("should create a LimitRange with defaults and max", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "lr-create-uuid",
 					client: client,
@@ -255,7 +255,7 @@ func TestQuota(t *testing.T) {
 						},
 					},
 				}
-				client := fake.NewSimpleClientset(existingLR)
+				client := fake.NewClientset(existingLR)
 				env := &Environment{
 					Id:     "lr-update-uuid",
 					client: client,
@@ -280,9 +280,9 @@ func TestQuota(t *testing.T) {
 				g.Assert(defaultCPU.Cmp(resource.MustParse("4"))).Equal(0)
 			})
 
-			g.It("should fail fast on a non-NotFound Get error instead of creating", func() {
-				client := fake.NewSimpleClientset()
-				client.PrependReactor("get", "limitranges", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			g.It("should propagate an Apply error", func() {
+				client := fake.NewClientset()
+				client.PrependReactor("patch", "limitranges", func(action k8stesting.Action) (bool, runtime.Object, error) {
 					return true, nil, errors.New("boom: api server unavailable")
 				})
 				env := &Environment{

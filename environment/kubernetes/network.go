@@ -9,7 +9,10 @@ import (
 	"emperror.dev/errors"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/watch"
+	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 
 	"github.com/pelican/wings/config"
 )
@@ -40,9 +43,11 @@ func (e *Environment) EnsureService(ctx context.Context) error {
 	isLB := cfg.Kubernetes.NetworkMode == config.KubeNetworkLoadBalancer
 
 	// Build the Service port list from allocations. A port may appear under
-	// multiple allocation IPs, but the Service only needs it once.
+	// multiple allocation IPs, but the Service only needs it once. nodePort is
+	// only set when an explicit port was resolved; omitting it lets the
+	// apiserver keep any already-allocated NodePort across applies.
 	seenPorts := make(map[int]bool)
-	var servicePorts []corev1.ServicePort
+	var servicePorts []*corev1apply.ServicePortApplyConfiguration
 	for _, ports := range allocs.Mappings {
 		for _, port := range ports {
 			if port < 1 || port > 65535 || seenPorts[port] {
@@ -50,22 +55,22 @@ func (e *Environment) EnsureService(ctx context.Context) error {
 			}
 			seenPorts[port] = true
 
-			tcp := corev1.ServicePort{
-				Name:       portName("tcp", port),
-				Protocol:   corev1.ProtocolTCP,
-				Port:       int32(port),
-				TargetPort: intstr.FromInt32(int32(port)),
-			}
-			udp := corev1.ServicePort{
-				Name:       portName("udp", port),
-				Protocol:   corev1.ProtocolUDP,
-				Port:       int32(port),
-				TargetPort: intstr.FromInt32(int32(port)),
-			}
+			tcp := corev1apply.ServicePort().
+				WithName(portName("tcp", port)).
+				WithProtocol(corev1.ProtocolTCP).
+				WithPort(int32(port)).
+				WithTargetPort(intstr.FromInt32(int32(port)))
+			udp := corev1apply.ServicePort().
+				WithName(portName("udp", port)).
+				WithProtocol(corev1.ProtocolUDP).
+				WithPort(int32(port)).
+				WithTargetPort(intstr.FromInt32(int32(port)))
 
 			if !isLB {
-				tcp.NodePort = e.resolveNodePort(cfg, port)
-				udp.NodePort = e.resolveNodePort(cfg, port)
+				if np := e.resolveNodePort(cfg, port); np != 0 {
+					tcp.WithNodePort(np)
+					udp.WithNodePort(np)
+				}
 			}
 
 			servicePorts = append(servicePorts, tcp, udp)
@@ -109,49 +114,23 @@ func (e *Environment) EnsureService(ctx context.Context) error {
 		}
 	}
 
-	desired := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        svcName,
-			Namespace:   ns,
-			Labels:      labels,
-			Annotations: annotations,
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     svcType,
-			Selector: selector,
-			Ports:    servicePorts,
-		},
+	apply := corev1apply.Service(svcName, ns).
+		WithLabels(labels).
+		WithSpec(corev1apply.ServiceSpec().
+			WithType(svcType).
+			WithSelector(selector).
+			WithPorts(servicePorts...))
+	if len(annotations) > 0 {
+		// Wings owns the annotations field via server-side apply, so
+		// annotations omitted here (e.g. stale LB annotations after a
+		// networkMode switch) are removed from the live object.
+		apply.WithAnnotations(annotations)
 	}
 
-	// Check if the Service already exists.
-	existing, err := e.client.CoreV1().Services(ns).Get(ctx, svcName, metav1.GetOptions{})
+	e.log().WithField("service", svcName).Infof("applying %s service for server", svcType)
+	_, err := e.client.CoreV1().Services(ns).Apply(ctx, apply, applyOptions())
 	if err != nil {
-		if !isNotFound(err) {
-			return errors.Wrap(err, "environment/kubernetes: failed to get service")
-		}
-		// Service does not exist; create it.
-		e.log().WithField("service", svcName).Infof("creating %s service for server", svcType)
-		_, err = e.client.CoreV1().Services(ns).Create(ctx, desired, metav1.CreateOptions{})
-		if err != nil {
-			return errors.Wrap(err, "environment/kubernetes: failed to create service")
-		}
-		return nil
-	}
-
-	// Service exists; update it with the desired spec while preserving
-	// existing NodePort assignments where possible. Type and annotations must
-	// also be reconciled so a networkMode switch (e.g. NodePort <-> LoadBalancer)
-	// is applied and stale LB annotations are cleared.
-	existing.Spec.Type = desired.Spec.Type
-	existing.Spec.Selector = desired.Spec.Selector
-	existing.Spec.Ports = mergeServicePorts(existing.Spec.Ports, desired.Spec.Ports)
-	existing.Labels = labels
-	existing.Annotations = annotations
-
-	e.log().WithField("service", svcName).Infof("updating %s service for server", svcType)
-	_, err = e.client.CoreV1().Services(ns).Update(ctx, existing, metav1.UpdateOptions{})
-	if err != nil {
-		return errors.Wrap(err, "environment/kubernetes: failed to update service")
+		return errors.Wrap(err, "environment/kubernetes: failed to apply service")
 	}
 
 	return nil
@@ -230,37 +209,82 @@ func (e *Environment) GetServiceExternalIP(ctx context.Context) (string, error) 
 	return "", nil
 }
 
-// WaitForLoadBalancerIP polls the Service until an external IP is assigned by
-// the load balancer provisioner, or until the timeout (2 minutes) is reached.
+// WaitForLoadBalancerIP watches the Service until an external IP is assigned
+// by the load balancer provisioner, or until the timeout (2 minutes) is
+// reached. The watch is re-established if the apiserver closes the result
+// channel before the deadline.
 func (e *Environment) WaitForLoadBalancerIP(ctx context.Context) (string, error) {
 	cfg := config.Get()
 	if cfg.Kubernetes.NetworkMode != config.KubeNetworkLoadBalancer {
 		return "", nil
 	}
 
-	timeout := 2 * time.Minute
-	interval := 3 * time.Second
-	deadline := time.Now().Add(timeout)
+	dctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 
-	for time.Now().Before(deadline) {
-		ip, err := e.GetServiceExternalIP(ctx)
-		if err != nil {
-			return "", err
+	ingressIP := func(svc *corev1.Service) string {
+		for _, ingress := range svc.Status.LoadBalancer.Ingress {
+			if ingress.IP != "" {
+				return ingress.IP
+			}
+			if ingress.Hostname != "" {
+				return ingress.Hostname
+			}
 		}
-		if ip != "" {
-			e.log().WithField("external_ip", ip).Info("load balancer IP assigned")
-			return ip, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(interval):
-		}
+		return ""
 	}
 
-	e.log().Warn("timed out waiting for load balancer IP assignment")
-	return "", nil
+	var ip string
+	err := watchUntil(dctx,
+		func(ctx context.Context) (runtime.Object, error) {
+			svc, err := e.client.CoreV1().Services(e.namespace()).Get(ctx, e.serviceName(), metav1.GetOptions{})
+			if err != nil {
+				if isNotFound(err) {
+					// No Service exists; signal done via a nil object.
+					return nil, nil
+				}
+				return nil, errors.Wrap(err, "environment/kubernetes: failed to get service")
+			}
+			return svc, nil
+		},
+		func(ctx context.Context) (watch.Interface, error) {
+			w, err := e.client.CoreV1().Services(e.namespace()).Watch(ctx, metav1.ListOptions{
+				FieldSelector: "metadata.name=" + e.serviceName(),
+			})
+			if err != nil {
+				return nil, errors.Wrap(err, "environment/kubernetes: failed to watch service")
+			}
+			return w, nil
+		},
+		func(evt watch.EventType, obj runtime.Object) (bool, error) {
+			if obj == nil {
+				return true, nil
+			}
+			if evt == watch.Deleted {
+				return false, nil
+			}
+			svc, ok := obj.(*corev1.Service)
+			if !ok {
+				return false, nil
+			}
+			if ip = ingressIP(svc); ip != "" {
+				e.log().WithField("external_ip", ip).Info("load balancer IP assigned")
+				return true, nil
+			}
+			return false, nil
+		},
+	)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			e.log().Warn("timed out waiting for load balancer IP assignment")
+			return "", nil
+		}
+		return "", err
+	}
+	return ip, nil
 }
 
 // resolveNodePort determines the NodePort to request for a given game server
@@ -284,31 +308,6 @@ func (e *Environment) resolveNodePort(cfg *config.Configuration, port int) int32
 		return int32(port)
 	}
 	return 0
-}
-
-// mergeServicePorts merges desired ports into existing ports, preserving
-// assigned NodePorts for ports that haven't changed.
-func mergeServicePorts(existing, desired []corev1.ServicePort) []corev1.ServicePort {
-	existingByKey := make(map[string]corev1.ServicePort)
-	for _, p := range existing {
-		key := fmt.Sprintf("%s/%s", p.Name, p.Protocol)
-		existingByKey[key] = p
-	}
-
-	var merged []corev1.ServicePort
-	for _, d := range desired {
-		key := fmt.Sprintf("%s/%s", d.Name, d.Protocol)
-		if ex, ok := existingByKey[key]; ok {
-			// Preserve the existing NodePort if the target hasn't changed and
-			// we didn't request a specific one.
-			if d.NodePort == 0 && ex.NodePort > 0 && ex.TargetPort.IntValue() == d.TargetPort.IntValue() {
-				d.NodePort = ex.NodePort
-			}
-		}
-		merged = append(merged, d)
-	}
-
-	return merged
 }
 
 // sanitizePortName ensures a Kubernetes Service port name is valid (lowercase,

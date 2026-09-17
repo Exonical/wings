@@ -13,6 +13,7 @@ func TestMain(m *testing.M) {
 	c.AuthenticationToken = "test-token-for-testing"
 	c.Kubernetes.Namespace = "pelican"
 	c.Kubernetes.NetworkMode = config.KubeNetworkHostPort
+	c.Kubernetes.NodeName = "test-node"
 	c.Kubernetes.NodePortRangeMin = 30000
 	c.Kubernetes.NodePortRangeMax = 32767
 	config.Set(c)

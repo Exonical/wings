@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 
 	"github.com/pelican/wings/config"
 	"github.com/pelican/wings/environment"
@@ -79,34 +80,16 @@ func (e *Environment) ensureIdentityConfigMap(ctx context.Context, mounts []envi
 		})
 	}
 
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
-			Namespace: ns,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "pelican-wings",
-				"pelican.dev/server-id":        e.Id,
-				"pelican.dev/resource-type":    "identity",
-			},
-		},
-		Data: data,
-	}
+	apply := corev1apply.ConfigMap(cmName, ns).
+		WithLabels(map[string]string{
+			"app.kubernetes.io/managed-by": "pelican-wings",
+			"pelican.dev/server-id":        e.Id,
+			"pelican.dev/resource-type":    "identity",
+		}).
+		WithData(data)
 
-	existing, err := e.client.CoreV1().ConfigMaps(ns).Get(ctx, cmName, metav1.GetOptions{})
-	if err != nil {
-		if !isNotFound(err) {
-			return corev1.Volume{}, nil, err
-		}
-		_, err = e.client.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{})
-		if err != nil {
-			return corev1.Volume{}, nil, err
-		}
-	} else {
-		existing.Data = data
-		_, err = e.client.CoreV1().ConfigMaps(ns).Update(ctx, existing, metav1.UpdateOptions{})
-		if err != nil {
-			return corev1.Volume{}, nil, err
-		}
+	if _, err := e.client.CoreV1().ConfigMaps(ns).Apply(ctx, apply, applyOptions()); err != nil {
+		return corev1.Volume{}, nil, err
 	}
 
 	vol := corev1.Volume{

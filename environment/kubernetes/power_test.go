@@ -28,7 +28,7 @@ func TestWaitForStop(t *testing.T) {
 		return &Environment{
 			Id:      "test-uuid",
 			meta:    &Metadata{},
-			client:  fake.NewSimpleClientset(objects...),
+			client:  fake.NewClientset(objects...),
 			st:      system.NewAtomicString(state),
 			emitter: events.NewBus(),
 		}

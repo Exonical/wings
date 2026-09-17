@@ -170,6 +170,16 @@ func (e *Environment) Create() error {
 		pod.Spec.DNSPolicy = corev1.DNSPolicy(cfg.Kubernetes.DNSPolicy)
 	}
 
+	// Pin the Pod to the Wings node when it depends on node-local resources
+	// (HostPath storage, hostPort networking, or HostPath mounts).
+	if requiresNodePinning(cfg, mounts) {
+		nodeName := resolveNodeName()
+		if nodeName == "" {
+			return errors.New("environment/kubernetes: node pinning required (hostpath storage / hostport networking / hostPath mounts) but node name is unknown; set kubernetes.node_name or the NODE_NAME env var")
+		}
+		pod.Spec.Affinity = nodeAffinityFor(nodeName)
+	}
+
 	// Apply node selector.
 	if len(cfg.Kubernetes.NodeSelector) > 0 {
 		pod.Spec.NodeSelector = cfg.Kubernetes.NodeSelector

@@ -12,6 +12,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/pelican/wings/config"
@@ -40,9 +41,19 @@ func TestInstaller(t *testing.T) {
 			})
 		})
 
-		g.Describe("WriteInstallScript", func() {
-			g.It("should create a ConfigMap with the script content", func() {
-				client := fake.NewSimpleClientset()
+		g.Describe("writeInstallScript", func() {
+			newJob := func(client *fake.Clientset, name string) *batchv1.Job {
+				job, err := client.BatchV1().Jobs("pelican").Create(context.Background(), &batchv1.Job{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "pelican"},
+				}, metav1.CreateOptions{})
+				if err != nil {
+					panic(err)
+				}
+				return job
+			}
+
+			g.It("should create a ConfigMap with the script content owned by the Job", func() {
+				client := fake.NewClientset()
 				ip := &InstallerProcess{
 					ServerID:  "write-cm-uuid",
 					client:    client,
@@ -52,7 +63,8 @@ func TestInstaller(t *testing.T) {
 					},
 				}
 
-				err := ip.WriteInstallScript(context.Background())
+				job := newJob(client, "write-cm-uuid-installer")
+				err := ip.writeInstallScript(context.Background(), job)
 				g.Assert(err).IsNil()
 
 				cm, err := client.CoreV1().ConfigMaps("pelican").Get(context.Background(), "write-cm-uuid-install-script", metav1.GetOptions{})
@@ -60,6 +72,11 @@ func TestInstaller(t *testing.T) {
 				// Should replace \r\n with \n.
 				g.Assert(cm.Data["install.sh"]).Equal("#!/bin/bash\necho hello\necho world")
 				g.Assert(cm.Labels["pelican.dev/server-id"]).Equal("write-cm-uuid")
+				// Should be owned by the Job.
+				g.Assert(len(cm.OwnerReferences)).Equal(1)
+				g.Assert(cm.OwnerReferences[0].Kind).Equal("Job")
+				g.Assert(cm.OwnerReferences[0].Name).Equal("write-cm-uuid-installer")
+				g.Assert(cm.OwnerReferences[0].UID).Equal(job.UID)
 			})
 
 			g.It("should replace existing ConfigMap on re-run", func() {
@@ -70,7 +87,7 @@ func TestInstaller(t *testing.T) {
 					},
 					Data: map[string]string{"install.sh": "old script"},
 				}
-				client := fake.NewSimpleClientset(existingCM)
+				client := fake.NewClientset(existingCM)
 				ip := &InstallerProcess{
 					ServerID:  "rewrite-uuid",
 					client:    client,
@@ -80,18 +97,20 @@ func TestInstaller(t *testing.T) {
 					},
 				}
 
-				err := ip.WriteInstallScript(context.Background())
+				job := newJob(client, "rewrite-uuid-installer")
+				err := ip.writeInstallScript(context.Background(), job)
 				g.Assert(err).IsNil()
 
 				cm, err := client.CoreV1().ConfigMaps("pelican").Get(context.Background(), "rewrite-uuid-install-script", metav1.GetOptions{})
 				g.Assert(err).IsNil()
 				g.Assert(cm.Data["install.sh"]).Equal("new script")
+				g.Assert(len(cm.OwnerReferences)).Equal(1)
 			})
 		})
 
 		g.Describe("Run", func() {
 			g.It("should create a Job with correct spec", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				ip := &InstallerProcess{
 					ServerID:   "test-server-uuid",
 					client:     client,
@@ -111,6 +130,9 @@ func TestInstaller(t *testing.T) {
 					c.Kubernetes.Namespace = "pelican"
 					c.Kubernetes.NodeSelector = map[string]string{"role": "game"}
 					c.Kubernetes.ServiceAccount = "pelican-wings"
+					c.Kubernetes.StorageMode = config.KubeStorageHostPath
+					c.Kubernetes.NetworkMode = config.KubeNetworkHostPort
+					c.Kubernetes.NodeName = "test-node"
 				})
 
 				// Run will create the Job but waitForJob will keep polling.
@@ -177,8 +199,22 @@ func TestInstaller(t *testing.T) {
 				// Verify service account.
 				g.Assert(podSpec.ServiceAccountName).Equal("pelican-wings")
 
+				// Verify node pinning affinity (hostpath storage requires it).
+				terms := podSpec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+				g.Assert(len(terms)).Equal(1)
+				g.Assert(terms[0].MatchExpressions[0].Key).Equal("kubernetes.io/hostname")
+				g.Assert(terms[0].MatchExpressions[0].Values[0]).Equal("test-node")
+
 				// Verify backoff limit.
 				g.Assert(*job.Spec.BackoffLimit).Equal(int32(0))
+
+				// Verify the install-script ConfigMap is owned by the Job.
+				cm, err := client.CoreV1().ConfigMaps("pelican").Get(context.Background(), "test-server-uuid-install-script", metav1.GetOptions{})
+				g.Assert(err).IsNil()
+				g.Assert(len(cm.OwnerReferences)).Equal(1)
+				g.Assert(cm.OwnerReferences[0].Kind).Equal("Job")
+				g.Assert(cm.OwnerReferences[0].Name).Equal(job.Name)
+				g.Assert(cm.OwnerReferences[0].UID).Equal(job.UID)
 
 				// Cancel to stop waitForJob and assert the cancellation propagates.
 				cancel()
@@ -196,7 +232,7 @@ func TestInstaller(t *testing.T) {
 						Succeeded: 1,
 					},
 				}
-				client := fake.NewSimpleClientset(completedJob)
+				client := fake.NewClientset(completedJob)
 				ip := &InstallerProcess{
 					ServerID:  "completed-uuid",
 					client:    client,
@@ -227,20 +263,31 @@ func TestInstaller(t *testing.T) {
 		})
 
 		g.Describe("Cleanup", func() {
-			g.It("should delete the Job and ConfigMap", func() {
+			g.It("should delete the Job and leave the owned ConfigMap for GC", func() {
 				existingJob := &batchv1.Job{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "cleanup-uuid-installer",
 						Namespace: "pelican",
+						UID:       "job-uid-123",
 					},
 				}
+				controller := true
 				existingCM := &corev1.ConfigMap{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "cleanup-uuid-install-script",
 						Namespace: "pelican",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion: "batch/v1",
+								Kind:       "Job",
+								Name:       "cleanup-uuid-installer",
+								UID:        "job-uid-123",
+								Controller: &controller,
+							},
+						},
 					},
 				}
-				client := fake.NewSimpleClientset(existingJob, existingCM)
+				client := fake.NewClientset(existingJob, existingCM)
 				ip := &InstallerProcess{
 					ServerID:  "cleanup-uuid",
 					client:    client,
@@ -253,12 +300,18 @@ func TestInstaller(t *testing.T) {
 				_, err = client.BatchV1().Jobs("pelican").Get(context.Background(), "cleanup-uuid-installer", metav1.GetOptions{})
 				g.Assert(err).IsNotNil()
 
-				_, err = client.CoreV1().ConfigMaps("pelican").Get(context.Background(), "cleanup-uuid-install-script", metav1.GetOptions{})
-				g.Assert(err).IsNotNil()
+				// The fake clientset performs no garbage collection, so the
+				// ConfigMap is still present; on a real cluster it is removed
+				// via its ownerReference to the Job.
+				cm, err := client.CoreV1().ConfigMaps("pelican").Get(context.Background(), "cleanup-uuid-install-script", metav1.GetOptions{})
+				g.Assert(err).IsNil()
+				g.Assert(len(cm.OwnerReferences)).Equal(1)
+				g.Assert(cm.OwnerReferences[0].Kind).Equal("Job")
+				g.Assert(cm.OwnerReferences[0].UID).Equal(types.UID("job-uid-123"))
 			})
 
 			g.It("should not error when Job and ConfigMap do not exist", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				ip := &InstallerProcess{
 					ServerID:  "nonexistent-uuid",
 					client:    client,
@@ -274,7 +327,7 @@ func TestInstaller(t *testing.T) {
 				os.MkdirAll(tmpDir, 0o700)
 				os.WriteFile(filepath.Join(tmpDir, "install.sh"), []byte("echo hi"), 0o644)
 
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				ip := &InstallerProcess{
 					ServerID:  "tmpdir-uuid",
 					client:    client,
@@ -335,7 +388,7 @@ func TestInstaller(t *testing.T) {
 
 		g.Describe("NewInstallerProcess", func() {
 			g.It("should initialize all fields from Environment", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "init-test-uuid",
 					client: client,

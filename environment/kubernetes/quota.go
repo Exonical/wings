@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 
 	"github.com/pelican/wings/config"
 )
@@ -14,7 +15,16 @@ import (
 const (
 	quotaName      = "pelican-wings"
 	limitRangeName = "pelican-wings"
+
+	// fieldManager identifies Wings as the owner of fields it applies via
+	// server-side apply.
+	fieldManager = "pelican-wings"
 )
+
+// applyOptions returns the ApplyOptions used for all server-side apply calls.
+func applyOptions() metav1.ApplyOptions {
+	return metav1.ApplyOptions{FieldManager: fieldManager, Force: true}
+}
 
 // EnsureResourceQuota creates or updates the ResourceQuota in the game server
 // namespace. If resource_quota is not enabled in config, this is a no-op.
@@ -30,26 +40,17 @@ func (e *Environment) EnsureResourceQuota(ctx context.Context) error {
 		return err
 	}
 
-	existing, err := e.client.CoreV1().ResourceQuotas(ns).Get(ctx, quotaName, metav1.GetOptions{})
-	if err != nil && !isNotFound(err) {
-		return errors.Wrap(err, "environment/kubernetes: failed to get ResourceQuota")
-	}
-	if err == nil {
-		// Update existing.
-		existing.Spec = quota.Spec
-		_, err = e.client.CoreV1().ResourceQuotas(ns).Update(ctx, existing, metav1.UpdateOptions{})
-		if err != nil {
-			return errors.Wrap(err, "environment/kubernetes: failed to update ResourceQuota")
-		}
-		return nil
-	}
+	apply := corev1apply.ResourceQuota(quotaName, ns).
+		WithLabels(map[string]string{
+			"app.kubernetes.io/managed-by": "pelican-wings",
+		}).
+		WithSpec(corev1apply.ResourceQuotaSpec().WithHard(quota.Spec.Hard))
 
-	_, err = e.client.CoreV1().ResourceQuotas(ns).Create(ctx, quota, metav1.CreateOptions{})
+	_, err = e.client.CoreV1().ResourceQuotas(ns).Apply(ctx, apply, applyOptions())
 	if err != nil {
-		return errors.Wrap(err, "environment/kubernetes: failed to create ResourceQuota")
+		return errors.Wrap(err, "environment/kubernetes: failed to apply ResourceQuota")
 	}
 
-	e.log().Info("created ResourceQuota for namespace")
 	return nil
 }
 
@@ -67,26 +68,28 @@ func (e *Environment) EnsureLimitRange(ctx context.Context) error {
 		return err
 	}
 
-	existing, err := e.client.CoreV1().LimitRanges(ns).Get(ctx, limitRangeName, metav1.GetOptions{})
-	if err != nil && !isNotFound(err) {
-		return errors.Wrap(err, "environment/kubernetes: failed to get LimitRange")
-	}
-	if err == nil {
-		// Update existing.
-		existing.Spec = lr.Spec
-		_, err = e.client.CoreV1().LimitRanges(ns).Update(ctx, existing, metav1.UpdateOptions{})
-		if err != nil {
-			return errors.Wrap(err, "environment/kubernetes: failed to update LimitRange")
-		}
-		return nil
+	items := make([]*corev1apply.LimitRangeItemApplyConfiguration, 0, len(lr.Spec.Limits))
+	for _, item := range lr.Spec.Limits {
+		items = append(items, corev1apply.LimitRangeItem().
+			WithType(item.Type).
+			WithDefault(item.Default).
+			WithDefaultRequest(item.DefaultRequest).
+			WithMin(item.Min).
+			WithMax(item.Max).
+			WithMaxLimitRequestRatio(item.MaxLimitRequestRatio))
 	}
 
-	_, err = e.client.CoreV1().LimitRanges(ns).Create(ctx, lr, metav1.CreateOptions{})
+	apply := corev1apply.LimitRange(limitRangeName, ns).
+		WithLabels(map[string]string{
+			"app.kubernetes.io/managed-by": "pelican-wings",
+		}).
+		WithSpec(corev1apply.LimitRangeSpec().WithLimits(items...))
+
+	_, err = e.client.CoreV1().LimitRanges(ns).Apply(ctx, apply, applyOptions())
 	if err != nil {
-		return errors.Wrap(err, "environment/kubernetes: failed to create LimitRange")
+		return errors.Wrap(err, "environment/kubernetes: failed to apply LimitRange")
 	}
 
-	e.log().Info("created LimitRange for namespace")
 	return nil
 }
 

@@ -13,6 +13,8 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/pelican/wings/config"
@@ -140,6 +142,17 @@ func (ip *InstallerProcess) Run(ctx context.Context) error {
 		},
 	}
 
+	// Pin the installer Pod to the Wings node when it depends on node-local
+	// resources (HostPath storage or hostPort networking). The installer only
+	// mounts the default data volume, so no extra mounts are considered.
+	if requiresNodePinning(cfg, nil) {
+		nodeName := resolveNodeName()
+		if nodeName == "" {
+			return errors.New("environment/kubernetes: node pinning required (hostpath storage / hostport networking / hostPath mounts) but node name is unknown; set kubernetes.node_name or the NODE_NAME env var")
+		}
+		job.Spec.Template.Spec.Affinity = nodeAffinityFor(nodeName)
+	}
+
 	// Apply node selector from config.
 	if len(cfg.Kubernetes.NodeSelector) > 0 {
 		job.Spec.Template.Spec.NodeSelector = cfg.Kubernetes.NodeSelector
@@ -172,9 +185,18 @@ func (ip *InstallerProcess) Run(ctx context.Context) error {
 		job.Spec.Template.Spec.Tolerations = append(job.Spec.Template.Spec.Tolerations, toleration)
 	}
 
-	// Create the Job.
-	if _, err := ip.client.BatchV1().Jobs(ip.namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+	// Create the Job first so the install-script ConfigMap can be owned by it
+	// and garbage-collected with it.
+	createdJob, err := ip.client.BatchV1().Jobs(ip.namespace).Create(ctx, job, metav1.CreateOptions{})
+	if err != nil {
 		return errors.Wrap(err, "environment/kubernetes: failed to create installer job")
+	}
+
+	// Create the script ConfigMap with an ownerReference to the Job. The Job's
+	// pod may sit in ContainerCreating until the ConfigMap exists; that is
+	// expected.
+	if err := ip.writeInstallScript(ctx, createdJob); err != nil {
+		return err
 	}
 
 	// Stream logs in the background.
@@ -231,40 +253,66 @@ func (ip *InstallerProcess) streamJobLogs(ctx context.Context) {
 	}
 }
 
-// waitForJob polls the Job until it succeeds, fails, or the context is
-// canceled.
+// waitForJob watches the Job until it succeeds, fails, or the context is
+// canceled. The watch is re-established when the apiserver closes the result
+// channel (e.g. on watch timeouts) until the overall 30-minute deadline.
 func (ip *InstallerProcess) waitForJob(ctx context.Context) error {
-	timeout := 30 * time.Minute
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	dctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline:
-			return errors.New("environment/kubernetes: installer job timed out after 30 minutes")
-		case <-ticker.C:
+	err := watchUntil(dctx,
+		func(ctx context.Context) (runtime.Object, error) {
 			job, err := ip.client.BatchV1().Jobs(ip.namespace).Get(ctx, ip.jobName(), metav1.GetOptions{})
 			if err != nil {
-				return errors.Wrap(err, "environment/kubernetes: failed to get installer job status")
+				return nil, errors.Wrap(err, "environment/kubernetes: failed to get installer job status")
 			}
-
-			// Check for completion.
-			if job.Status.Succeeded > 0 {
-				return nil
+			return job, nil
+		},
+		func(ctx context.Context) (watch.Interface, error) {
+			w, err := ip.client.BatchV1().Jobs(ip.namespace).Watch(ctx, metav1.ListOptions{
+				FieldSelector: "metadata.name=" + ip.jobName(),
+			})
+			if err != nil {
+				return nil, errors.Wrap(err, "environment/kubernetes: failed to watch installer job")
 			}
-
-			// Check for failure.
-			if job.Status.Failed > 0 {
-				return errors.New("environment/kubernetes: installer job failed")
+			return w, nil
+		},
+		func(evt watch.EventType, obj runtime.Object) (bool, error) {
+			if evt == watch.Deleted {
+				return true, errors.New("environment/kubernetes: installer job was deleted before completion")
 			}
-		}
+			job, ok := obj.(*batchv1.Job)
+			if !ok {
+				return false, nil
+			}
+			return jobTerminal(job)
+		},
+	)
+	if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		return errors.New("environment/kubernetes: installer job timed out after 30 minutes")
 	}
+	return err
 }
 
-// Cleanup removes the installer Job, ConfigMap, and associated resources.
+// jobTerminal reports whether the Job has reached a terminal state: true with
+// a nil error on success, true with an error on failure.
+func jobTerminal(job *batchv1.Job) (bool, error) {
+	if job.Status.Succeeded > 0 {
+		return true, nil
+	}
+	if job.Status.Failed > 0 {
+		return true, errors.New("environment/kubernetes: installer job failed")
+	}
+	for _, c := range job.Status.Conditions {
+		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
+			return true, errors.New("environment/kubernetes: installer job failed")
+		}
+	}
+	return false, nil
+}
+
+// Cleanup removes the installer Job and associated resources. The
+// install-script ConfigMap is owned by the Job and garbage-collected with it.
 func (ip *InstallerProcess) Cleanup(ctx context.Context) error {
 	err := ip.client.BatchV1().Jobs(ip.namespace).Delete(ctx, ip.jobName(), metav1.DeleteOptions{
 		PropagationPolicy: propagationBackground(),
@@ -273,11 +321,8 @@ func (ip *InstallerProcess) Cleanup(ctx context.Context) error {
 		return errors.Wrap(err, "environment/kubernetes: failed to delete installer job")
 	}
 
-	// Delete the install script ConfigMap.
-	cmErr := ip.client.CoreV1().ConfigMaps(ip.namespace).Delete(ctx, ip.configMapName(), metav1.DeleteOptions{})
-	if cmErr != nil && !isNotFound(cmErr) {
-		return errors.Wrap(cmErr, "environment/kubernetes: failed to delete install script configmap")
-	}
+	// The install script ConfigMap is owned by the Job and is removed by
+	// background garbage collection when the Job is deleted.
 
 	// Remove temporary install script directory (legacy cleanup).
 	if ip.TmpDir != "" {
@@ -287,10 +332,11 @@ func (ip *InstallerProcess) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// WriteInstallScript creates a ConfigMap containing the installation script.
-// The ConfigMap is mounted into the Job Pod at /mnt/install, eliminating the
-// need for a shared filesystem between Wings and the Job Pod.
-func (ip *InstallerProcess) WriteInstallScript(ctx context.Context) error {
+// writeInstallScript creates the install-script ConfigMap with an
+// ownerReference to the given Job so it is garbage-collected together with
+// it. The ConfigMap is mounted into the Job Pod at /mnt/install, eliminating
+// the need for a shared filesystem between Wings and the Job Pod.
+func (ip *InstallerProcess) writeInstallScript(ctx context.Context, job *batchv1.Job) error {
 	content := strings.ReplaceAll(ip.Script.Script, "\r\n", "\n")
 
 	cm := &corev1.ConfigMap{
@@ -305,6 +351,18 @@ func (ip *InstallerProcess) WriteInstallScript(ctx context.Context) error {
 		},
 		Data: map[string]string{
 			"install.sh": content,
+		},
+	}
+
+	controller, blockOwnerDeletion := true, true
+	cm.OwnerReferences = []metav1.OwnerReference{
+		{
+			APIVersion:         "batch/v1",
+			Kind:               "Job",
+			Name:               job.Name,
+			UID:                job.UID,
+			Controller:         &controller,
+			BlockOwnerDeletion: &blockOwnerDeletion,
 		},
 	}
 
@@ -396,20 +454,31 @@ func (ip *InstallerProcess) waitForJobDeletion(ctx context.Context, timeout time
 	dctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		_, err := ip.client.BatchV1().Jobs(ip.namespace).Get(dctx, ip.jobName(), metav1.GetOptions{})
-		if err != nil && isNotFound(err) {
-			return nil
-		}
-		select {
-		case <-dctx.Done():
-			return dctx.Err()
-		case <-ticker.C:
-		}
-	}
+	return watchUntil(dctx,
+		func(ctx context.Context) (runtime.Object, error) {
+			job, err := ip.client.BatchV1().Jobs(ip.namespace).Get(ctx, ip.jobName(), metav1.GetOptions{})
+			if err != nil {
+				if isNotFound(err) {
+					// Already gone; signal done via a nil object.
+					return nil, nil
+				}
+				return nil, errors.Wrap(err, "environment/kubernetes: failed to get installer job")
+			}
+			return job, nil
+		},
+		func(ctx context.Context) (watch.Interface, error) {
+			w, err := ip.client.BatchV1().Jobs(ip.namespace).Watch(ctx, metav1.ListOptions{
+				FieldSelector: "metadata.name=" + ip.jobName(),
+			})
+			if err != nil {
+				return nil, errors.Wrap(err, "environment/kubernetes: failed to watch installer job")
+			}
+			return w, nil
+		},
+		func(evt watch.EventType, obj runtime.Object) (bool, error) {
+			return obj == nil || evt == watch.Deleted, nil
+		},
+	)
 }
 
 // propagationForeground returns a pointer to the Foreground propagation policy.

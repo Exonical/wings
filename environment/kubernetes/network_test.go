@@ -40,7 +40,7 @@ func TestNetwork(t *testing.T) {
 
 	g.Describe("EnsureService", func() {
 		g.It("should be a no-op in hostport mode", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				Mappings: map[string][]int{"0.0.0.0": {25565}},
 			}
@@ -61,7 +61,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should create a NodePort service in nodeport mode", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				Mappings: map[string][]int{"0.0.0.0": {25565, 25575}},
 			}
@@ -109,7 +109,7 @@ func TestNetwork(t *testing.T) {
 					Selector: map[string]string{"pelican.dev/server-id": "test-server-uuid"},
 				},
 			}
-			client := fake.NewSimpleClientset(existingSvc)
+			client := fake.NewClientset(existingSvc)
 			allocs := environment.Allocations{
 				Mappings: map[string][]int{"0.0.0.0": {25565, 25575}},
 			}
@@ -130,31 +130,27 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should reconcile Service type and annotations when network mode changes", func() {
-			// Pre-create a LoadBalancer Service with stale LB annotations.
-			existingSvc := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "gs-test-server-uuid",
-					Namespace:   "pelican",
-					Annotations: map[string]string{"lbipam.cilium.io/ips": "10.0.0.1"},
-				},
-				Spec: corev1.ServiceSpec{
-					Type:     corev1.ServiceTypeLoadBalancer,
-					Selector: map[string]string{"pelican.dev/server-id": "test-server-uuid"},
-				},
-			}
-			client := fake.NewSimpleClientset(existingSvc)
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				Mappings: map[string][]int{"0.0.0.0": {25565}},
 			}
 			env := newTestEnv(client, allocs)
 
-			// Switch to NodePort mode.
+			// Apply in LoadBalancer mode so Wings owns the LB annotations.
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NetworkMode = config.KubeNetworkLoadBalancer
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.LBAnnotations = map[string]string{"lbipam.cilium.io/ips": "10.0.0.1"}
+			})
+			err := env.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			// Switch to NodePort mode and apply again.
 			config.Update(func(c *config.Configuration) {
 				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
-				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.LBAnnotations = nil
 			})
-
-			err := env.EnsureService(context.Background())
+			err = env.EnsureService(context.Background())
 			g.Assert(err).IsNil()
 
 			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
@@ -166,7 +162,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should be a no-op with empty allocations", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				Mappings: map[string][]int{},
 			}
@@ -185,7 +181,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should auto-set LB IP and sharing-key annotations from allocation IP", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				DefaultMapping: &environment.DefaultAllocationMapping{
 					Ip:   "23.227.184.222",
@@ -217,7 +213,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should not set IP annotations when allocation IP is 0.0.0.0", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				DefaultMapping: &environment.DefaultAllocationMapping{
 					Ip:   "0.0.0.0",
@@ -246,7 +242,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should not set IP annotations when config keys are empty", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				DefaultMapping: &environment.DefaultAllocationMapping{
 					Ip:   "23.227.184.222",
@@ -273,34 +269,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should remove stale IP annotations when allocation IP becomes invalid", func() {
-			existingSvc := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "gs-test-server-uuid",
-					Namespace: "pelican",
-					Annotations: map[string]string{
-						"io.cilium/lb-ipam-pool":       "game-servers",
-						"lbipam.cilium.io/ips":         "23.227.184.222",
-						"lbipam.cilium.io/sharing-key": "23.227.184.222",
-					},
-				},
-				Spec: corev1.ServiceSpec{
-					Type: corev1.ServiceTypeLoadBalancer,
-					Ports: []corev1.ServicePort{
-						{Name: "tcp-27015", Protocol: corev1.ProtocolTCP, Port: 27015},
-						{Name: "udp-27015", Protocol: corev1.ProtocolUDP, Port: 27015},
-					},
-					Selector: map[string]string{"pelican.dev/server-id": "test-server-uuid"},
-				},
-			}
-			client := fake.NewSimpleClientset(existingSvc)
-			allocs := environment.Allocations{
-				DefaultMapping: &environment.DefaultAllocationMapping{
-					Ip:   "0.0.0.0",
-					Port: 27015,
-				},
-				Mappings: map[string][]int{"0.0.0.0": {27015}},
-			}
-			env := newTestEnv(client, allocs)
+			client := fake.NewClientset()
 
 			config.Update(func(c *config.Configuration) {
 				c.Kubernetes.NetworkMode = config.KubeNetworkLoadBalancer
@@ -312,10 +281,34 @@ func TestNetwork(t *testing.T) {
 				c.Kubernetes.LBSharingKey = "lbipam.cilium.io/sharing-key"
 			})
 
-			err := env.EnsureService(context.Background())
+			// Apply with a valid allocation IP so Wings owns the IP-pinning
+			// annotations.
+			withIP := newTestEnv(client, environment.Allocations{
+				DefaultMapping: &environment.DefaultAllocationMapping{
+					Ip:   "23.227.184.222",
+					Port: 27015,
+				},
+				Mappings: map[string][]int{"23.227.184.222": {27015}},
+			})
+			err := withIP.EnsureService(context.Background())
 			g.Assert(err).IsNil()
 
 			svc, err := client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			g.Assert(svc.Annotations["lbipam.cilium.io/ips"]).Equal("23.227.184.222")
+
+			// Apply again with an unusable allocation IP.
+			withoutIP := newTestEnv(client, environment.Allocations{
+				DefaultMapping: &environment.DefaultAllocationMapping{
+					Ip:   "0.0.0.0",
+					Port: 27015,
+				},
+				Mappings: map[string][]int{"0.0.0.0": {27015}},
+			})
+			err = withoutIP.EnsureService(context.Background())
+			g.Assert(err).IsNil()
+
+			svc, err = client.CoreV1().Services("pelican").Get(context.Background(), "gs-test-server-uuid", metav1.GetOptions{})
 			g.Assert(err).IsNil()
 			// Pool annotation should remain.
 			g.Assert(svc.Annotations["io.cilium/lb-ipam-pool"]).Equal("game-servers")
@@ -338,7 +331,7 @@ func TestNetwork(t *testing.T) {
 					Type: corev1.ServiceTypeNodePort,
 				},
 			}
-			client := fake.NewSimpleClientset(existingSvc)
+			client := fake.NewClientset(existingSvc)
 			allocs := environment.Allocations{}
 			env := newTestEnv(client, allocs)
 
@@ -355,7 +348,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should not error when service does not exist", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{}
 			env := newTestEnv(client, allocs)
 
@@ -375,7 +368,7 @@ func TestNetwork(t *testing.T) {
 					Namespace: "pelican",
 				},
 			}
-			client := fake.NewSimpleClientset(existingSvc)
+			client := fake.NewClientset(existingSvc)
 			allocs := environment.Allocations{}
 			env := newTestEnv(client, allocs)
 
@@ -408,7 +401,7 @@ func TestNetwork(t *testing.T) {
 					},
 				},
 			}
-			client := fake.NewSimpleClientset(existingSvc)
+			client := fake.NewClientset(existingSvc)
 			allocs := environment.Allocations{}
 			env := newTestEnv(client, allocs)
 
@@ -424,7 +417,7 @@ func TestNetwork(t *testing.T) {
 		})
 
 		g.It("should return nil in hostport mode", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{}
 			env := newTestEnv(client, allocs)
 
@@ -473,40 +466,4 @@ func TestNetwork(t *testing.T) {
 		})
 	})
 
-	g.Describe("mergeServicePorts", func() {
-		g.It("should preserve existing NodePorts for unchanged ports", func() {
-			existing := []corev1.ServicePort{
-				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31000},
-			}
-			desired := []corev1.ServicePort{
-				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 0},
-			}
-			merged := mergeServicePorts(existing, desired)
-			g.Assert(len(merged)).Equal(1)
-			g.Assert(merged[0].NodePort).Equal(int32(31000))
-		})
-
-		g.It("should use desired NodePort when explicitly set", func() {
-			existing := []corev1.ServicePort{
-				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31000},
-			}
-			desired := []corev1.ServicePort{
-				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31500},
-			}
-			merged := mergeServicePorts(existing, desired)
-			g.Assert(merged[0].NodePort).Equal(int32(31500))
-		})
-
-		g.It("should add new ports", func() {
-			existing := []corev1.ServicePort{
-				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 31000},
-			}
-			desired := []corev1.ServicePort{
-				{Name: "tcp-25565", Protocol: corev1.ProtocolTCP, Port: 25565, NodePort: 0},
-				{Name: "tcp-25575", Protocol: corev1.ProtocolTCP, Port: 25575, NodePort: 0},
-			}
-			merged := mergeServicePorts(existing, desired)
-			g.Assert(len(merged)).Equal(2)
-		})
-	})
 }

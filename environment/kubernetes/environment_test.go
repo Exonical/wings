@@ -2,6 +2,8 @@ package kubernetes
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 
 	. "github.com/franela/goblin"
@@ -71,7 +73,7 @@ func TestEnvironment(t *testing.T) {
 						Namespace: "pelican",
 					},
 				}
-				client := fake.NewSimpleClientset(pod)
+				client := fake.NewClientset(pod)
 				env := &Environment{
 					Id:     "test-uuid",
 					client: client,
@@ -88,7 +90,7 @@ func TestEnvironment(t *testing.T) {
 			})
 
 			g.It("should return false when Pod does not exist", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "nonexistent-uuid",
 					client: client,
@@ -122,7 +124,7 @@ func TestEnvironment(t *testing.T) {
 						},
 					},
 				}
-				client := fake.NewSimpleClientset(pod)
+				client := fake.NewClientset(pod)
 				env := &Environment{
 					Id:     "test-uuid",
 					client: client,
@@ -148,7 +150,7 @@ func TestEnvironment(t *testing.T) {
 						Phase: corev1.PodPending,
 					},
 				}
-				client := fake.NewSimpleClientset(pod)
+				client := fake.NewClientset(pod)
 				env := &Environment{
 					Id:     "test-uuid",
 					client: client,
@@ -186,7 +188,7 @@ func TestEnvironment(t *testing.T) {
 						},
 					},
 				}
-				client := fake.NewSimpleClientset(pod)
+				client := fake.NewClientset(pod)
 				env := &Environment{
 					Id:     "test-uuid",
 					client: client,
@@ -204,7 +206,7 @@ func TestEnvironment(t *testing.T) {
 			})
 
 			g.It("should return exit code 1 when Pod does not exist", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "nonexistent-uuid",
 					client: client,
@@ -225,7 +227,7 @@ func TestEnvironment(t *testing.T) {
 
 	g.Describe("Create", func() {
 		g.It("should create a Pod with correct spec", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{
 				Mappings: map[string][]int{"0.0.0.0": {25565}},
 			}
@@ -303,7 +305,7 @@ func TestEnvironment(t *testing.T) {
 					Namespace: "pelican",
 				},
 			}
-			client := fake.NewSimpleClientset(existingPod)
+			client := fake.NewClientset(existingPod)
 			allocs := environment.Allocations{}
 			settings := environment.Settings{
 				Allocations: allocs,
@@ -328,7 +330,7 @@ func TestEnvironment(t *testing.T) {
 		})
 
 		g.It("should strip ~ prefix from image", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			allocs := environment.Allocations{}
 			settings := environment.Settings{Allocations: allocs}
 			cfg := environment.NewConfiguration(settings, nil)
@@ -351,6 +353,151 @@ func TestEnvironment(t *testing.T) {
 			pod, _ := client.CoreV1().Pods("pelican").Get(context.Background(), "tilde-test-uuid", metav1.GetOptions{})
 			g.Assert(pod.Spec.Containers[0].Image).Equal("local/myimage:latest")
 		})
+
+		g.It("should pin the Pod to the Wings node in hostpath/hostport mode", func() {
+			client := fake.NewClientset()
+			cfg := environment.NewConfiguration(environment.Settings{
+				Mounts: []environment.Mount{
+					{Default: true, Source: "/var/lib/pelican/servers/pin", Target: "/home/container"},
+				},
+			}, nil)
+			env := &Environment{
+				Id:            "pin-test-uuid",
+				Configuration: cfg,
+				meta:          &Metadata{Image: "nginx"},
+				client:        client,
+				st:            system.NewAtomicString(environment.ProcessOfflineState),
+				emitter:       events.NewBus(),
+			}
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.NetworkMode = config.KubeNetworkHostPort
+				c.Kubernetes.StorageMode = config.KubeStorageHostPath
+				c.Kubernetes.NodeName = "test-node"
+				c.Kubernetes.DataPVC = ""
+			})
+
+			err := env.Create()
+			g.Assert(err).IsNil()
+
+			pod, err := client.CoreV1().Pods("pelican").Get(context.Background(), "pin-test-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			terms := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+			g.Assert(len(terms)).Equal(1)
+			expr := terms[0].MatchExpressions[0]
+			g.Assert(expr.Key).Equal("kubernetes.io/hostname")
+			g.Assert(expr.Operator).Equal(corev1.NodeSelectorOpIn)
+			g.Assert(expr.Values).Equal([]string{"test-node"})
+		})
+
+		g.It("should not pin the Pod in pvc/nodeport mode with only the default mount", func() {
+			client := fake.NewClientset()
+			cfg := environment.NewConfiguration(environment.Settings{
+				Mounts: []environment.Mount{
+					{Default: true, Source: "/var/lib/pelican/servers/nopin", Target: "/home/container"},
+				},
+			}, nil)
+			env := &Environment{
+				Id:            "nopin-test-uuid",
+				Configuration: cfg,
+				meta:          &Metadata{Image: "nginx"},
+				client:        client,
+				st:            system.NewAtomicString(environment.ProcessOfflineState),
+				emitter:       events.NewBus(),
+			}
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.StorageMode = config.KubeStoragePVC
+				c.Kubernetes.StorageSize = "10Gi"
+				c.Kubernetes.NodeName = "test-node"
+				c.Kubernetes.DataPVC = ""
+			})
+
+			err := env.Create()
+			g.Assert(err).IsNil()
+
+			pod, err := client.CoreV1().Pods("pelican").Get(context.Background(), "nopin-test-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			g.Assert(pod.Spec.Affinity == nil).IsTrue()
+		})
+
+		g.It("should pin the Pod in pvc/nodeport mode when a non-default mount exists", func() {
+			client := fake.NewClientset()
+			cfg := environment.NewConfiguration(environment.Settings{
+				Mounts: []environment.Mount{
+					{Default: true, Source: "/var/lib/pelican/servers/pinm", Target: "/home/container"},
+					{Default: false, Source: "/shared/plugins", Target: "/plugins", ReadOnly: true},
+				},
+			}, nil)
+			env := &Environment{
+				Id:            "pinm-test-uuid",
+				Configuration: cfg,
+				meta:          &Metadata{Image: "nginx"},
+				client:        client,
+				st:            system.NewAtomicString(environment.ProcessOfflineState),
+				emitter:       events.NewBus(),
+			}
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.NetworkMode = config.KubeNetworkNodePort
+				c.Kubernetes.StorageMode = config.KubeStoragePVC
+				c.Kubernetes.StorageSize = "10Gi"
+				c.Kubernetes.NodeName = "test-node"
+				c.Kubernetes.DataPVC = ""
+			})
+
+			err := env.Create()
+			g.Assert(err).IsNil()
+
+			pod, err := client.CoreV1().Pods("pelican").Get(context.Background(), "pinm-test-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNil()
+			g.Assert(pod.Spec.Affinity).IsNotNil()
+			terms := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+			g.Assert(terms[0].MatchExpressions[0].Values[0]).Equal("test-node")
+		})
+
+		g.It("should fail to create the Pod when pinning is required but the node name is unknown", func() {
+			client := fake.NewClientset()
+			cfg := environment.NewConfiguration(environment.Settings{}, nil)
+			env := &Environment{
+				Id:            "noname-test-uuid",
+				Configuration: cfg,
+				meta:          &Metadata{Image: "nginx"},
+				client:        client,
+				st:            system.NewAtomicString(environment.ProcessOfflineState),
+				emitter:       events.NewBus(),
+			}
+
+			oldNodeName, hadNodeName := os.LookupEnv("NODE_NAME")
+			os.Unsetenv("NODE_NAME")
+			defer func() {
+				if hadNodeName {
+					os.Setenv("NODE_NAME", oldNodeName)
+				}
+			}()
+
+			config.Update(func(c *config.Configuration) {
+				c.Kubernetes.Namespace = "pelican"
+				c.Kubernetes.NetworkMode = config.KubeNetworkHostPort
+				c.Kubernetes.StorageMode = config.KubeStorageHostPath
+				c.Kubernetes.NodeName = ""
+				c.Kubernetes.DataPVC = ""
+			})
+			defer config.Update(func(c *config.Configuration) {
+				c.Kubernetes.NodeName = "test-node"
+			})
+
+			err := env.Create()
+			g.Assert(err).IsNotNil()
+			g.Assert(strings.Contains(err.Error(), "node pinning required")).IsTrue()
+
+			_, err = client.CoreV1().Pods("pelican").Get(context.Background(), "noname-test-uuid", metav1.GetOptions{})
+			g.Assert(err).IsNotNil()
+		})
 	})
 
 	g.Describe("Destroy", func() {
@@ -361,7 +508,7 @@ func TestEnvironment(t *testing.T) {
 					Namespace: "pelican",
 				},
 			}
-			client := fake.NewSimpleClientset(existingPod)
+			client := fake.NewClientset(existingPod)
 			env := &Environment{
 				Id:            "destroy-uuid",
 				client:        client,
@@ -385,7 +532,7 @@ func TestEnvironment(t *testing.T) {
 		})
 
 		g.It("should not error when Pod does not exist", func() {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			env := &Environment{
 				Id:            "nonexistent-uuid",
 				client:        client,
@@ -417,7 +564,7 @@ func TestEnvironment(t *testing.T) {
 					Namespace: "pelican",
 				},
 			}
-			client := fake.NewSimpleClientset(existingPod, existingSvc)
+			client := fake.NewClientset(existingPod, existingSvc)
 			env := &Environment{
 				Id:            "svc-destroy-uuid",
 				client:        client,

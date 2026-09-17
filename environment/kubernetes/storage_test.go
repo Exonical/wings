@@ -28,7 +28,7 @@ func TestStorage(t *testing.T) {
 
 		g.Describe("EnsurePVC", func() {
 			g.It("should be a no-op in hostpath mode", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "hostpath-uuid",
 					client: client,
@@ -49,7 +49,7 @@ func TestStorage(t *testing.T) {
 			})
 
 			g.It("should create a PVC in pvc mode", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "pvc-create-uuid",
 					client: client,
@@ -83,7 +83,7 @@ func TestStorage(t *testing.T) {
 			})
 
 			g.It("should create PVC with ReadWriteMany access mode", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "rwm-uuid",
 					client: client,
@@ -114,7 +114,7 @@ func TestStorage(t *testing.T) {
 						Namespace: "pelican",
 					},
 				}
-				client := fake.NewSimpleClientset(existingPVC)
+				client := fake.NewClientset(existingPVC)
 				env := &Environment{
 					Id:     "existing-uuid",
 					client: client,
@@ -132,7 +132,7 @@ func TestStorage(t *testing.T) {
 			})
 
 			g.It("should error on invalid storage size", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "bad-size-uuid",
 					client: client,
@@ -152,7 +152,7 @@ func TestStorage(t *testing.T) {
 
 		g.Describe("DeletePVC", func() {
 			g.It("should be a no-op in hostpath mode", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "hostpath-del-uuid",
 					client: client,
@@ -175,7 +175,7 @@ func TestStorage(t *testing.T) {
 						Namespace: "pelican",
 					},
 				}
-				client := fake.NewSimpleClientset(existingPVC)
+				client := fake.NewClientset(existingPVC)
 				env := &Environment{
 					Id:     "del-uuid",
 					client: client,
@@ -195,7 +195,7 @@ func TestStorage(t *testing.T) {
 			})
 
 			g.It("should not error when PVC does not exist", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "nonexist-uuid",
 					client: client,
@@ -214,7 +214,7 @@ func TestStorage(t *testing.T) {
 
 		g.Describe("ResizePVC", func() {
 			g.It("should be a no-op in hostpath mode", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "resize-hp-uuid",
 					client: client,
@@ -244,7 +244,7 @@ func TestStorage(t *testing.T) {
 						},
 					},
 				}
-				client := fake.NewSimpleClientset(existingPVC)
+				client := fake.NewClientset(existingPVC)
 				env := &Environment{
 					Id:     "resize-uuid",
 					client: client,
@@ -266,7 +266,7 @@ func TestStorage(t *testing.T) {
 			})
 
 			g.It("should error on invalid size", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "bad-resize-uuid",
 					client: client,
@@ -296,7 +296,7 @@ func TestStorage(t *testing.T) {
 						},
 					},
 				}
-				client := fake.NewSimpleClientset(existingPVC)
+				client := fake.NewClientset(existingPVC)
 				env := &Environment{
 					Id:     "shared-resize-uuid",
 					client: client,
@@ -325,7 +325,7 @@ func TestStorage(t *testing.T) {
 
 		g.Describe("buildVolumes with PVC mode", func() {
 			g.It("should use PVC for default mount in pvc mode", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "bv-pvc-uuid",
 					client: client,
@@ -363,7 +363,7 @@ func TestStorage(t *testing.T) {
 			})
 
 			g.It("should use HostPath for default mount in hostpath mode", func() {
-				client := fake.NewSimpleClientset()
+				client := fake.NewClientset()
 				env := &Environment{
 					Id:     "bv-hp-uuid",
 					client: client,
